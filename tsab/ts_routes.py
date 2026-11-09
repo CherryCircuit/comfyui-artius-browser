@@ -12,6 +12,7 @@ from .ts_settings import (
     TS_MAX_INDEX_FILES,
 )
 from .ts_logging import TSLogVerbose
+from .ts_db_query import TSResolveAssetFolderFilter
 from .ts_utils import TSIsSqliteInt, TSParseAssetCursor, TSParseDateToEpoch, TSParseMaybeInt, TSParseQueryList
 
 TSRoutesRegistered = False
@@ -179,11 +180,15 @@ def TSRegisterRoutes(ts_runtime) -> None:
 async def TSHandleAssets(ts_runtime, ts_request):
     TSLogVerbose("route.assets.request", query=dict(ts_request.query), path=ts_request.path)
     TSRejectUnsupportedAssetQueryParams(ts_request.query)
+    ts_view = ts_request.query.get("view") or "flat"
+    ts_recurse = str(ts_request.query.get("recurse", "true")).lower() not in {"0", "false", "no"}
+    ts_folder = TSResolveAssetFolderFilter(ts_request.query.get("folder"), ts_view, ts_recurse)
     ts_filters = {
         "types": TSParseQueryList(ts_request.query.get("types") or ts_request.query.get("filter")),
         "scopes": TSParseQueryList(ts_request.query.get("scope")),
         "root_ids": TSParseQueryList(ts_request.query.get("root_id")),
-        "folder": ts_request.query.get("folder"),
+        "folder": ts_folder,
+        "recurse": ts_recurse,
         "date_from": TSParseDateToEpoch(ts_request.query.get("date_from")),
         "date_to": TSParseDateToEpoch(ts_request.query.get("date_to"), ts_end_of_day=True),
         "min_width": TSParseMaybeInt(ts_request.query.get("min_width")),
@@ -197,7 +202,6 @@ async def TSHandleAssets(ts_runtime, ts_request):
         "needs_3d_capture": str(ts_request.query.get("needs_3d_capture") or "").lower() in {"1", "true", "yes"},
     }
     ts_limit = min(500, max(1, TSParseMaybeInt(ts_request.query.get("limit")) or TS_DEFAULT_PAGE_SIZE))
-    ts_view = ts_request.query.get("view") or "flat"
     ts_query = ts_request.query.get("q") or ""
     ts_cursor_after = TSParseAssetCursor(ts_request.query)
     ts_response_payload = await asyncio.to_thread(

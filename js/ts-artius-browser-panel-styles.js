@@ -31,6 +31,7 @@ export const tsPanelStyles = `<style>
                     --ts-danger-surface: color-mix(in srgb, #d24b4b 18%, var(--ts-bg-2));
                     --ts-danger-surface-hover: color-mix(in srgb, #d24b4b 26%, var(--ts-bg-2));
                 }
+                [hidden] { display:none !important; }
 
                 .ts-shell {
                     flex: 1 1 auto;
@@ -199,6 +200,53 @@ export const tsPanelStyles = `<style>
                     font-weight: 600;
                 }
 
+                .ts-preferences { position:absolute; inset:0; z-index:70; display:flex; justify-content:flex-end; background:color-mix(in srgb,var(--ts-bg-0) 42%,transparent); }
+                .ts-preferences[data-open="false"] { display:none; }
+                .ts-preferences-panel { width:min(360px,100%); max-height:100%; overflow:auto; padding:14px; background:var(--comfy-menu-bg,var(--bg-color,#252525)); border-left:1px solid var(--ts-border); box-shadow:var(--ts-shadow); display:flex; flex-direction:column; gap:10px; }
+                .ts-preferences-panel header,.ts-pref-actions { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+                .ts-preferences-panel label { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:12px; }
+                .ts-preferences-panel select,.ts-preferences-panel button { color:var(--ts-text); background:var(--ts-bg-2); border:1px solid var(--ts-border); border-radius:6px; padding:5px 8px; font:inherit; }
+                .ts-preferences-panel fieldset { border:1px solid var(--ts-border); border-radius:8px; padding:8px; }
+                .ts-pref-controls { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+                .ts-pref-controls label { font-size:11px; }
+                .ts-pref-metadata { display:grid; gap:8px; }
+                .ts-pref-media { display:grid; grid-template-columns:1fr 1fr; gap:4px 8px; }
+                .ts-pref-media strong { grid-column:1/-1; font-size:11px; text-transform:capitalize; }
+                .ts-pref-media label { font-size:10px; }
+                .ts-pref-about { border-top:1px solid var(--ts-border); padding-top:8px; font-size:12px; }
+                .ts-pref-about summary { cursor:pointer; font-weight:600; }
+                .ts-pref-about > div { display:flex; flex-wrap:wrap; gap:8px 14px; padding:8px 0 2px; }
+                .ts-pref-about a { color:var(--ts-accent); text-decoration:underline; }
+                .ts-settings-toggle { width:26px; height:26px; padding:0; border-radius:6px; border:1px solid var(--ts-border); color:var(--ts-text); background:var(--ts-bg-2); cursor:pointer; }
+                .ts-settings-toggle { margin-left:auto; }
+                .ts-help-toggle { margin-left:0; }
+                .ts-folder-nav { flex:0 1 auto; min-width:0; display:flex; align-items:center; gap:3px; }
+                .ts-selection-bar { display:flex; align-items:center; gap:7px; padding:6px 10px; border-top:1px solid var(--ts-border); background:var(--ts-surface-ghost); }
+                .ts-selection-bar[hidden] { display:none !important; }
+                .ts-selection-count { color:var(--ts-muted); font-size:11px; margin-right:4px; }
+                .ts-selection-bar button { border:1px solid var(--ts-border); border-radius:6px; padding:4px 8px; color:var(--ts-text); background:var(--ts-bg-2); cursor:pointer; }
+                .ts-selection-bar svg { width:16px; height:16px; }
+                .ts-folder-nav > button { min-width:26px; padding:2px 5px; border:1px solid var(--ts-border); border-radius:5px; color:var(--ts-text); background:var(--ts-bg-2); cursor:pointer; }
+                .ts-folder-nav > button:disabled { opacity:.4; cursor:default; }
+                .ts-breadcrumbs { display:flex; align-items:center; gap:4px; min-width:0; overflow:auto; white-space:nowrap; scrollbar-width:thin; }
+                .ts-breadcrumbs button { max-width:110px; overflow:hidden; text-overflow:ellipsis; border:0; background:transparent; color:var(--ts-muted); cursor:pointer; font:inherit; font-size:11px; padding:3px; }
+                .ts-breadcrumbs button[aria-current="location"] { color:var(--ts-text); font-weight:600; }
+                .ts-type-icon { width:14px; height:14px; vertical-align:-2px; margin-right:4px; }
+                .ts-chip { white-space:nowrap; }
+                .ts-type-cluster,.ts-type-chips,.ts-mode-group { flex-wrap:nowrap; flex-shrink:0; }
+                .ts-shell[data-toolbar-style="icons"] .ts-chip span { display:none; }
+                .ts-shell[data-toolbar-style="icons"] .ts-chip { width:32px; min-width:32px; padding:5px; display:inline-flex; align-items:center; justify-content:center; }
+                .ts-shell[data-toolbar-style="icons"] .ts-mode-button[data-active="true"] { display:none; }
+                .ts-shell[data-toolbar-style="icons"] .ts-toolbar-main button:not(.ts-toggle-button) { white-space:nowrap; }
+                .ts-shell[data-toolbar-style="icons"] .ts-toolbar-main button { min-width:32px; min-height:32px; padding:5px 7px; display:inline-flex; align-items:center; justify-content:center; gap:5px; }
+                .ts-shell[data-toolbar-style="icons"] .ts-toolbar-main button svg { width:16px; height:16px; flex:none; }
+                .ts-shell[data-toolbar-style="icons"] .ts-icon-label { font-size:11px; }
+                .ts-shell[data-toolbar-style="icons"] .ts-icon-label { display:none; }
+                .ts-shell[data-appearance="classic"] .ts-toolbar { border-radius:0; }
+                .ts-shell[data-appearance="finder"] .ts-title { gap:6px; }
+                .ts-gallery-content[data-appearance="finder"] .ts-card { border-radius:var(--ts-pref-card-radius,0px); }
+                @media (max-width: 520px) { .ts-toolbar-main-wrap { overflow:visible; height:auto !important; } .ts-toolbar-main-wrap > .ts-toolbar-main { transform:none !important; transform-origin:initial; width:100% !important; min-width:0; flex-wrap:nowrap; } .ts-toolbar-cluster { flex:0 0 auto; } .ts-search-cluster { min-width:75px; } .ts-root-select { max-width:88px; } }
+
                 .ts-shortcuts-close {
                     appearance: none;
                     border: 0;
@@ -257,6 +305,7 @@ export const tsPanelStyles = `<style>
                     padding: 10px;
                     border-bottom: 1px solid var(--ts-border);
                     background: var(--ts-bg-1);
+                    position:relative;
                 }
 
                 .ts-title {
@@ -360,7 +409,7 @@ export const tsPanelStyles = `<style>
                     display: flex;
                     align-items: center;
                     gap: 8px;
-                    flex-wrap: wrap;
+                    flex-wrap: nowrap;
                 }
 
                 .ts-toolbar-cluster {
@@ -378,6 +427,12 @@ export const tsPanelStyles = `<style>
                 .ts-toolbar-main-wrap {
                     overflow: hidden;
                 }
+                .ts-search-cluster { flex:1 1 150px; min-width:120px; }
+                .ts-search-cluster .ts-search { min-width:0; width:100%; }
+                .ts-toolbar-overflow-button { flex:0 0 32px; min-width:32px; min-height:32px; padding:0; border:1px solid var(--ts-border); border-radius:7px; background:var(--ts-bg-2); color:var(--ts-text); font-size:21px; line-height:1; cursor:pointer; }
+                .ts-toolbar-overflow { position:absolute; z-index:35; top:calc(100% - 4px); right:8px; width:min(310px,calc(100% - 16px)); max-height:min(65vh,520px); overflow:auto; display:flex; flex-direction:column; align-items:stretch; gap:5px; padding:8px; border:1px solid var(--ts-border); border-radius:10px; background:var(--ts-surface-overlay-strong); backdrop-filter:blur(12px); box-shadow:var(--ts-shadow); }
+                .ts-toolbar-overflow[hidden] { display:none !important; }
+                .ts-toolbar-overflow > * { flex:0 0 auto; }
 
                 .ts-toolbar-main-wrap > .ts-toolbar-main {
                     transform: scale(var(--ts-toolbar-scale, 1));
@@ -415,6 +470,11 @@ export const tsPanelStyles = `<style>
                     opacity: 1;
                     background: var(--ts-accent);
                 }
+
+                /* Keep the preferences control directly beside Help; Help's
+                   base rule used to push itself to the far edge instead. */
+                .ts-settings-toggle { margin-left:auto; }
+                .ts-help-toggle { margin-left:0; }
 
                 .ts-type-chips {
                     display: inline-flex;
@@ -1024,6 +1084,26 @@ export const tsPanelStyles = `<style>
                 .ts-card-media video.ts-workflow-preview {
                     object-fit: cover;
                 }
+                .ts-card-media video.ts-inline-thumbnail { cursor:pointer; }
+                .ts-inline-play { position:absolute; z-index:4; left:50%; top:50%; transform:translate(-50%,-50%); width:38px; height:38px; border:1px solid color-mix(in srgb,var(--ts-text) 45%,transparent); border-radius:50%; background:var(--ts-surface-overlay-strong); color:var(--ts-text); display:grid; place-items:center; opacity:0; pointer-events:none; transition:opacity .12s ease; cursor:pointer; }
+                .ts-inline-play svg { width:19px; height:19px; fill:currentColor; }
+                .ts-card:hover .ts-inline-play,.ts-card:focus-within .ts-inline-play { opacity:1; pointer-events:auto; }
+                .ts-card.ts-video-playing .ts-inline-play { display:none; }
+                .ts-card-caption { height:var(--ts-card-caption-height,48px); box-sizing:border-box; display:flex; flex-direction:column; justify-content:center; gap:2px; padding:3px 6px; overflow:hidden; font-size:11px; line-height:1.2; }
+                .ts-card-filename { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+                .ts-card-metadata { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:2px 5px; overflow:hidden; color:var(--ts-muted); font-size:10px; }
+                .ts-card-metadata span { min-width:0; white-space:nowrap; font-size:9px; overflow:visible; }
+                .ts-card-caption[data-metadata-style="badges"] .ts-card-metadata span { border-radius:4px; background:var(--ts-bg-3); padding:1px 4px; }
+                .ts-card-caption[data-metadata-style="hover"] .ts-card-metadata { display:none; }
+                .ts-card:hover .ts-card-caption[data-metadata-style="hover"] .ts-card-metadata,
+                .ts-card:focus-within .ts-card-caption[data-metadata-style="hover"] .ts-card-metadata { display:flex; }
+                .ts-card-badge[data-kind="meta"] { opacity:1; }
+                .ts-gallery-content[data-metadata-style="hover"] .ts-card-badge[data-kind="meta"] { opacity:0; transition:opacity .12s ease; }
+                .ts-gallery-content[data-metadata-style="hover"] .ts-card:hover .ts-card-badge[data-kind="meta"],
+                .ts-gallery-content[data-metadata-style="hover"] .ts-card:focus-within .ts-card-badge[data-kind="meta"] { opacity:1; }
+                .ts-gallery-content[data-appearance="finder"] .ts-card { border-color:transparent; background:transparent; box-shadow:none; }
+                .ts-gallery-content[data-appearance="finder"] .ts-card-media { background:transparent; }
+                .ts-gallery-content[data-animate-layout="true"] .ts-card { transition:transform .16s ease, border-color .14s ease, box-shadow .14s ease; }
 
                 .ts-card-placeholder {
                     display: grid;
@@ -1236,5 +1316,24 @@ export const tsPanelStyles = `<style>
                     .ts-tree-resizer {
                         display: none;
                     }
+                }
+
+                /* Surface options are independent of both appearances; keep
+                   them last so Finder's transparent defaults cannot win. */
+                .ts-gallery-content[data-card-background="transparent"] .ts-card-media { background:transparent; }
+                .ts-gallery-content[data-card-background="theme"] .ts-card-media { background:var(--ts-bg-2); }
+                .ts-gallery-content[data-appearance="classic"] .ts-card { border-radius:var(--ts-pref-card-radius,0px); }
+                .ts-gallery-content[data-card-border="true"] .ts-card { border-color:var(--ts-border); }
+                .ts-gallery-content[data-card-border="false"] .ts-card { border-color:transparent; }
+                .ts-gallery-content[data-card-border="true"][data-appearance="finder"] .ts-card { border-color:var(--ts-border); }
+                .ts-gallery-content[data-animate-layout="true"] .ts-card { transition:border-color .14s ease, box-shadow .14s ease; }
+                .ts-gallery-content[data-animate-layout="true"][data-layout-transition="true"] .ts-card { transition:transform .16s ease, border-color .14s ease, box-shadow .14s ease; }
+                @media (prefers-reduced-motion: reduce) {
+                    .ts-gallery-content[data-animate-layout="true"] .ts-card,
+                    .ts-gallery-content[data-animate-layout="true"][data-layout-transition="true"] .ts-card { transition:none !important; }
+                }
+                @media (max-width: 520px) {
+                    .ts-title .ts-version, .ts-title .ts-donate { display:none; }
+                    .ts-title-link { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
                 }
             </style>`;

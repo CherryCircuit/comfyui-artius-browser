@@ -14,6 +14,12 @@ TS_SORT_KEY_MAP: dict[str, dict[str, Any]] = {
 TS_DEFAULT_SORT_KEY = "created_at"
 
 
+def TSResolveAssetFolderFilter(ts_folder: Any, ts_view: str, ts_recurse: bool) -> str | None:
+    if ts_folder is None and ts_view == "tree" and not ts_recurse:
+        return ""
+    return ts_folder
+
+
 def TSResolveSortKey(ts_sort_key: str | None) -> str:
     return ts_sort_key if ts_sort_key in TS_SORT_KEY_MAP else TS_DEFAULT_SORT_KEY
 
@@ -82,7 +88,12 @@ def TSBuildAssetQueryParts(
         ts_parameters.extend(ts_root_ids)
     if ts_filters.get("folder") is not None:
         ts_folder = str(ts_filters["folder"]).strip()
-        if ts_folder:
+        ts_recurse = bool(ts_filters.get("recurse", True))
+        if not ts_folder and ts_recurse:
+            # The tree's root folder means the whole root when recursion is
+            # enabled; no folder predicate is the correct query here.
+            pass
+        elif ts_folder and ts_recurse:
             # The subtree pattern must escape LIKE wildcards the same way the
             # search clause above does: an unescaped "_" in a folder name is a
             # single-character wildcard, so selecting "img_2024" would also
@@ -92,6 +103,10 @@ def TSBuildAssetQueryParts(
                 "(assets_view.folder_path = ? OR assets_view.folder_path LIKE ? ESCAPE '\\')"
             )
             ts_parameters.extend([ts_folder, f"{ts_folder_pattern}/%"])
+        else:
+            ts_where_clauses.append("assets_view.folder_path = ?" if ts_folder else "assets_view.folder_path = ''")
+            if ts_folder:
+                ts_parameters.append(ts_folder)
     if ts_filters.get("date_from") is not None:
         ts_where_clauses.append("assets_view.created_at >= ?")
         ts_parameters.append(int(ts_filters["date_from"]))

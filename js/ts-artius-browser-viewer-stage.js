@@ -97,7 +97,11 @@ export function tsBuildStageMarkup(tsAsset, tsDeps) {
             const tsCompareItems = tsDeps.compareItems.slice(0, 4);
             const tsVideoLabel = tsDeps.t("type.video", "Video");
             return `
-                <div class="ts-video-compare-shell" data-count="${tsCompareItems.length}">
+                <div class="ts-video-compare-shell" data-count="${tsCompareItems.length}" data-layout="split">
+                    <div class="ts-video-compare-layout-controls">
+                        <button type="button" class="ts-video-compare-layout" aria-pressed="false" title="${tsDeps.escapeAttribute(tsDeps.t("tooltip.videoCompareLayout", "Switch between split and wipe comparison"))}">${tsDeps.t("button.split", "Split view")}</button>
+                        <label class="ts-video-size-label" title="${tsDeps.escapeAttribute(tsDeps.t("tooltip.videoSizeMode", "Fit contains the complete video; 1:1 maps one video pixel to one screen pixel; Centered shows 1:1 with the frame centered"))}">${tsDeps.t("label.videoSize", "Size")} <select class="ts-video-size-mode" aria-label="${tsDeps.escapeAttribute(tsDeps.t("label.videoSize", "Video size"))}"><option value="fit">${tsDeps.t("button.fit", "Fit")}</option><option value="actual">1:1</option><option value="centered">${tsDeps.t("button.centered", "Centered")}</option></select></label>
+                    </div>
                     <div class="ts-video-compare-grid">
                         ${tsCompareItems.map((tsCompareItem) => {
                             const tsCompareURL = tsDeps.escapeAttribute(tsDeps.apiURL(tsResolveDisplayURL(tsCompareItem)));
@@ -110,6 +114,7 @@ export function tsBuildStageMarkup(tsAsset, tsDeps) {
                             `;
                         }).join("")}
                     </div>
+                    <div class="ts-video-compare-wipe-controls" hidden></div>
                     <div class="ts-video-compare-controls">
                         <div class="ts-video-transport">
                             <button class="ts-video-play-toggle" type="button">${tsDeps.t("button.play", "Play")}</button>
@@ -138,6 +143,7 @@ export function tsBuildStageMarkup(tsAsset, tsDeps) {
         const tsPosterAttribute = tsAsset.preview_url && !tsAsset.preview_is_placeholder ? ` poster="${tsPreviewURL}"` : "";
         return `
             <div class="ts-video-shell">
+                <label class="ts-video-size-label" title="${tsDeps.escapeAttribute(tsDeps.t("tooltip.videoSizeMode", "Fit contains the complete video; 1:1 maps one video pixel to one screen pixel; Centered shows 1:1 with the frame centered"))}">${tsDeps.t("label.videoSize", "Size")} <select class="ts-video-size-mode" aria-label="${tsDeps.escapeAttribute(tsDeps.t("label.videoSize", "Video size"))}"><option value="fit">${tsDeps.t("button.fit", "Fit")}</option><option value="actual">1:1</option><option value="centered">${tsDeps.t("button.centered", "Centered")}</option></select></label>
                 <video${tsSizeAttributes}${tsPosterAttribute} src="${tsFileURL}" controls autoplay playsinline preload="auto"></video>
                 ${tsBuildMediaStatusMarkup(tsAsset, tsDeps)}
                 <div class="ts-video-controls">

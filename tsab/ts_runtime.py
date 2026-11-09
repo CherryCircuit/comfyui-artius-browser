@@ -24,6 +24,7 @@ from .ts_display_proxy import (
     TSResolveRowDisplayMode,
 )
 from .ts_handlers import TSHandlerRegistry
+from .ts_generation_timing import TSGenerationTimingService
 from .ts_indexer import TSIndexer
 from .ts_load3d_stage import TSPrepare3DAssetForLoad3D
 from .ts_logging import (
@@ -55,6 +56,10 @@ class TSAssetBrowserRuntime:
         self._TSApplyVerboseLoggingFromConfig()
         self.ts_browser_settings = TSBrowserSettingsService(self.ts_config_store)
         self.ts_database = TSDatabase(self.ts_storage_paths.ts_database_path)
+        self.ts_generation_timing = TSGenerationTimingService(
+            self.ts_database, self.ts_storage_paths.ts_output_directory, self._TSGetPromptServer
+        )
+        self.ts_generation_timing.ts_on_timing_recorded = self._TSEmitTimingUpdate
         self.ts_tools = TSToolLocator(self.ts_config_store)
         self.ts_preview_cache = TSPreviewCache(self.ts_storage_paths, self.ts_config_store)
         self.ts_handler_registry = TSHandlerRegistry(self.ts_preview_cache, self.ts_tools)
@@ -216,6 +221,15 @@ class TSAssetBrowserRuntime:
 
     def TSStart(self) -> None:
         self.ts_scan_service.TSStart()
+        self.ts_generation_timing.TSStart()
+
+    @staticmethod
+    def _TSGetPromptServer():
+        try:
+            from server import PromptServer
+            return getattr(PromptServer, "instance", None)
+        except Exception:
+            return None
 
     def TSEmitEvent(self, ts_event_name: str, ts_payload: dict[str, Any]) -> None:
         try:
@@ -296,6 +310,7 @@ class TSAssetBrowserRuntime:
             ts_size_bytes=int(ts_stat.st_size),
             ts_mtime_ns=int(getattr(ts_stat, "st_mtime_ns", int(ts_stat.st_mtime * 1000000000))),
             ts_ctime_ns=int(getattr(ts_stat, "st_ctime_ns", int(ts_stat.st_ctime * 1000000000))),
+            ts_birthtime_ns=int(getattr(ts_stat, "st_birthtime_ns", int(getattr(ts_stat, "st_birthtime", 0) * 1000000000))),
         )
 
     def _TSEmitAssetUpsert(self, ts_row) -> None:
@@ -311,6 +326,22 @@ class TSAssetBrowserRuntime:
                 "asset": ts_asset_payload,
             },
         )
+
+    def _TSEmitTimingUpdate(self, ts_path: str) -> None:
+        try:
+            ts_row = self.ts_database.TSGetAssetByPath(ts_path)
+            if ts_row is not None:
+                self.TSEmitEvent(
+                    TS_EVENT_ASSET_UPSERT,
+                    {
+                        "id": ts_row["id"],
+                        "path": ts_row["path"],
+                        "type": ts_row["type"],
+                        "asset": self.ts_asset_catalog.TSBuildAssetCard(ts_row),
+                    },
+                )
+        except Exception:
+            TSLogVerbose("runtime.generation_timing.refresh_failed")
 
     def _TSResolvePreviewFilePath(self, ts_row) -> Path:
         ts_preview_path = str(ts_row["preview_path"] or "")

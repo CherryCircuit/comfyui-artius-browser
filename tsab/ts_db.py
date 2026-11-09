@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 import threading
 import time
@@ -125,6 +126,7 @@ class TSDatabase:
         self._TSMigrateAdditiveColumns(ts_connection)
         try:
             ts_connection.executescript(TS_DB_SCHEMA_SQL)
+            self._TSMigrateGenerationTimingColumn(ts_connection)
         except sqlite3.DatabaseError as ts_error:
             TSLogVerbose(
                 "db.migration.additive_failed",
@@ -143,6 +145,14 @@ class TSDatabase:
         if ts_user_version != TS_DB_SCHEMA_VERSION:
             ts_connection.execute(f"PRAGMA user_version = {TS_DB_SCHEMA_VERSION}")
         TSLogVerbose("db.migrated", database=str(self.ts_database_path), schema_version=TS_DB_SCHEMA_VERSION)
+
+    @staticmethod
+    def _TSMigrateGenerationTimingColumn(ts_connection: sqlite3.Connection) -> None:
+        ts_columns = {str(row[1]) for row in ts_connection.execute("PRAGMA table_info(asset_generation_provenance)")}
+        if "generation_success_time" not in ts_columns:
+            ts_connection.execute(
+                "ALTER TABLE asset_generation_provenance ADD COLUMN generation_success_time REAL NOT NULL DEFAULT 0"
+            )
 
     def _TSEnsureReadableSchema(self, ts_connection: sqlite3.Connection, ts_user_version: int) -> None:
         # SQLite does NOT resolve column references when a view is created, so
@@ -329,6 +339,31 @@ class TSDatabase:
 
     def TSPayloadFromRow(self, ts_row: sqlite3.Row) -> TSAssetPayload:
         return TSPayloadFromAssetRow(ts_row)
+
+    def TSRecordGenerationTiming(self, ts_path: str, ts_size_bytes: int, ts_mtime_ns: int, ts_duration: float, ts_source: str, ts_prompt_id: str, ts_success_time: float = 0) -> bool:
+        """Persist the newest validated attribution for the current file identity."""
+        try:
+            ts_duration = float(ts_duration)
+            if not (0 < ts_duration <= 604800) or not math.isfinite(ts_duration):
+                return False
+            ts_success_time = float(ts_success_time)
+            if not math.isfinite(ts_success_time) or len(ts_path) > 4096 or len(ts_prompt_id) > 256 or ts_source != "comfy_history":
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+        ts_connection = self.TSGetConnection()
+        ts_cursor = ts_connection.execute(
+            """INSERT INTO asset_generation_provenance(path,size_bytes,mtime_ns,generation_time_seconds,generation_time_source,generation_prompt_id,generation_success_time)
+               VALUES(?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET
+               size_bytes=excluded.size_bytes, mtime_ns=excluded.mtime_ns,
+               generation_time_seconds=excluded.generation_time_seconds,
+               generation_time_source=excluded.generation_time_source,
+               generation_prompt_id=excluded.generation_prompt_id,
+               generation_success_time=excluded.generation_success_time
+               WHERE excluded.generation_success_time > asset_generation_provenance.generation_success_time""",
+            (ts_path, int(ts_size_bytes), int(ts_mtime_ns), ts_duration, ts_source, ts_prompt_id, ts_success_time),
+        )
+        return bool(ts_cursor.rowcount)
 
     def TSGetSnapshotBatch(self, ts_paths: list[str]) -> dict[str, sqlite3.Row]:
         if not ts_paths:
@@ -860,9 +895,17 @@ class TSDatabase:
         ts_last_row = ts_rows[-1]
         ts_sort_key = TSResolveSortKey((ts_filters or {}).get("sort_key"))
         ts_field = TS_SORT_KEY_MAP[ts_sort_key]["row_field"]
+        ts_sort_value = ts_last_row[ts_field]
+        # Nanosecond mtimes exceed JavaScript's exact integer range. JSON
+        # clients that round them cannot resume a keyset page without skips or
+        # repeats; a decimal string is lossless and TSCoerceSortValue parses it
+        # back to int on the next request. Other sort keys keep their existing
+        # wire representation.
+        if ts_sort_key == "mtime" and ts_sort_value is not None:
+            ts_sort_value = str(int(ts_sort_value))
         return {
             "sort_key": ts_sort_key,
-            "sort_value": ts_last_row[ts_field],
+            "sort_value": ts_sort_value,
             "id": int(ts_last_row["id"]),
         }
 

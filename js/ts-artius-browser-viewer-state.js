@@ -22,6 +22,23 @@ export const TS_COMPARE_SYNC_TOLERANCE_SECONDS = 0.02;
 export const TS_COMPARE_SYNC_HARD_SECONDS = 0.35;
 export const TS_COMPARE_SYNC_MAX_RATE_TRIM = 0.25;
 
+export function tsNormalizeVideoSizeMode(tsMode) {
+    return ["fit", "actual", "centered"].includes(tsMode) ? tsMode : "fit";
+}
+
+export function tsNormalizeCompareWipeBoundaries(tsValues = [], tsCount = 2) {
+    const tsDividerCount = Math.max(1, Math.min(4, Math.floor(Number(tsCount) || 2)) - 1);
+    const tsBoundaries = [];
+    for (let tsIndex = 0; tsIndex < tsDividerCount; tsIndex += 1) {
+        const tsMin = tsIndex === 0 ? 2 : tsBoundaries[tsIndex - 1] + 2;
+        const tsMax = 100 - (tsDividerCount - tsIndex) * 2;
+        const tsRaw = Number(tsValues[tsIndex]);
+        const tsValue = Number.isFinite(tsRaw) ? tsRaw : ((tsIndex + 1) * 100 / (tsDividerCount + 1));
+        tsBoundaries.push(Math.max(tsMin, Math.min(tsMax, tsValue)));
+    }
+    return [0, ...tsBoundaries, 100];
+}
+
 export function tsResolveCompareSyncCorrection(tsDriftSeconds, tsMasterRate = 1) {
     const tsRate = Number.isFinite(tsMasterRate) && tsMasterRate > 0 ? tsMasterRate : 1;
     const tsDrift = Number.isFinite(tsDriftSeconds) ? tsDriftSeconds : 0;

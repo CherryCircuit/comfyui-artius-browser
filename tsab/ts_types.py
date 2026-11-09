@@ -26,6 +26,7 @@ class TSAssetStat:
     ts_size_bytes: int
     ts_mtime_ns: int
     ts_ctime_ns: int
+    ts_birthtime_ns: int = 0
 
 
 @dataclass(slots=True)
@@ -51,6 +52,7 @@ class TSAssetPayload:
     ts_workflow_text: str = ""
     ts_model_text: str = ""
     ts_created_at: int = 0
+    ts_creation_time_is_birthtime: bool = False
     ts_is_indexed: bool = False
     ts_has_preview: bool = False
     ts_has_metadata: bool = False

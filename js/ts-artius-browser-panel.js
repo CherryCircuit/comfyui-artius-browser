@@ -72,6 +72,7 @@ import { TS_COMPARE_MAX_ITEMS, TS_COMPARE_MIN_ITEMS } from "./ts-artius-browser-
 import { TS3DThumbnailQueue } from "./ts-artius-browser-panel-3d-queue.js";
 import { tsPanelSettings, tsProjectSettings } from "./ts-artius-browser-settings.js";
 import { tsPanelStyles } from "./ts-artius-browser-panel-styles.js";
+import { tsNormalizeBrowserPreferences, tsCaptureRootProfile, tsApplyRootProfile, tsPreferenceControls } from "./ts-artius-browser-preferences.js";
 
 const tsTypeOrder = tsPanelSettings.typeOrder;
 const tsDefaultLimit = tsPanelSettings.defaultLimit;
@@ -143,11 +144,14 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             // click does move.
             tsSelectionAnchorId: null,
             tsFetchError: null,
+            tsBrowserPreferences: tsNormalizeBrowserPreferences(),
         };
         // Per-section scroll position, so Assets <-> Workflows returns to the
         // place the user left instead of the top.
         this.tsSectionScrollTop = { assets: 0, workflows: 0 };
         this.tsSavedScrollTop = 0;
+        this.tsFolderHistory = [];
+        this.tsFolderHistoryIndex = -1;
         this.tsBootstrapScanRequested = false;
         // First-load skeletons show only until the very first fetch settles;
         // after that an empty result is a real "no matches" state, not a
@@ -219,12 +223,25 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         // panel re-hydrates its own text when the extension entry point detects
         // one. Bound/unbound alongside the api events.
         this.tsLocaleChangedListener = (tsEvent) => this.tsHandleLocaleChanged(tsEvent);
+        this.tsToolbarOverflowDismissListener = (event) => {
+            const menu = this.tsRefs?.tsToolbarOverflow;
+            if (!menu || menu.hidden) return;
+            const path = event.composedPath?.() || [];
+            if (path.includes(menu) || path.includes(this.tsRefs?.tsToolbarOverflowButton)) return;
+            menu.hidden = true;
+            this.tsRefs?.tsToolbarOverflowButton?.setAttribute("aria-expanded", "false");
+        };
+        this.tsDocumentVisibilityListener = () => {
+            if (document.hidden) this.tsStopInlineVideos?.();
+        };
         this.attachShadow({ mode: "open" });
     }
 
     connectedCallback() {
         this.ts3DQueue.tsResume();
         window.addEventListener("tsab:locale-changed", this.tsLocaleChangedListener);
+        document.addEventListener("pointerdown", this.tsToolbarOverflowDismissListener, true);
+        document.addEventListener("visibilitychange", this.tsDocumentVisibilityListener);
         if (this.tsConnectedOnce) {
             this.tsBindApiEvents();
             this.tsStartWidthTracking();
@@ -238,6 +255,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             if (this.tsRefs?.tsToolbarMain) {
                 this.tsToolbarResizeObserver?.observe?.(this.tsRefs.tsToolbarMain);
             }
+            this.tsCreateInlineVideoObserver();
             this.tsScheduleSidebarRefresh(0);
             return;
         }
@@ -250,13 +268,20 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         tsEnsureCanvasDropBridge();
         this.tsViewer = tsGetViewerSingleton();
         this.tsBuildShell();
+        this.tsCreateInlineVideoObserver();
         this.tsBindEvents();
         this.tsInitAsync();
     }
 
     disconnectedCallback() {
         window.removeEventListener("tsab:locale-changed", this.tsLocaleChangedListener);
+        document.removeEventListener("pointerdown", this.tsToolbarOverflowDismissListener, true);
+        document.removeEventListener("visibilitychange", this.tsDocumentVisibilityListener);
         this.ts3DQueue.tsDispose();
+        this.tsStopInlineVideos?.();
+        this.tsInlineVideoObserver?.disconnect?.();
+        this.tsInlineVideoObserver = null;
+        window.clearTimeout(this.tsLayoutTransitionTimer);
         for (const tsTimerId of this.tsSidebarRefreshTimers) {
             window.clearTimeout(tsTimerId);
         }
@@ -550,6 +575,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         try {
             const tsPayload = await tsFetchBrowserSettings();
             const tsUI = tsPayload?.ui || {};
+            this.tsState.tsBrowserPreferences = tsNormalizeBrowserPreferences(tsUI.browser_preferences);
             if (typeof tsUI.language === "string" && tsUI.language) {
                 this.tsState.tsLanguage = tsUI.language;
             }
@@ -563,7 +589,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             }
             const tsToolbarScale = Number(tsUI.toolbar_scale);
             if (Number.isFinite(tsToolbarScale) && tsToolbarScale > 0) {
-                this.tsState.tsToolbarScale = Math.max(0.6, Math.min(1, tsToolbarScale));
+                this.tsState.tsToolbarScale = Math.max(0.85, Math.min(1, tsToolbarScale));
             }
             this.tsState.tsAssetSortKey = tsNormalizeAssetSortKey(tsUI.asset_sort_key, tsPanelSettings.defaultSort.key);
             this.tsState.tsAssetSortDirection = tsNormalizeSortDirection(tsUI.asset_sort_direction, tsPanelSettings.defaultSort.direction);
@@ -631,10 +657,17 @@ export class TSArtiusBrowserPanel extends HTMLElement {
                 // enforces the same invariant at render time.
                 this.tsState.tsRootId = "workflows";
             }
+            const activeRootProfile = this.tsState.tsBrowserPreferences.root_profiles[this.tsState.tsRootId];
+            if (this.tsState.tsBrowserPreferences.root_memory && activeRootProfile && !this.tsIsWorkflowSection()) {
+                tsApplyRootProfile(this.tsState, activeRootProfile, this.tsState.tsBrowserPreferences);
+            }
         } catch (tsError) {
             tsConsoleWarn("Timesaver Artius Browser settings fetch failed", tsError);
         } finally {
             this.tsState.tsSettingsHydrated = true;
+            if (this.tsFolderHistoryIndex < 0) this.tsPushFolderHistory();
+            this.tsApplyBrowserPreferences();
+            this.tsRefreshProfileControls();
             if (this.tsRefs?.tsSearch) {
                 this.tsRefs.tsSearch.value = String(this.tsState.tsSearch || "");
             }
@@ -699,6 +732,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
                 asset_tree_panel_width: this.tsState.tsAssetTreeWidth,
                 workflow_tree_panel_width: this.tsState.tsWorkflowTreeWidth,
                 toolbar_scale: Number(this.tsState.tsToolbarScale) || 1,
+                browser_preferences: tsNormalizeBrowserPreferences(this.tsState.tsBrowserPreferences),
             });
         } catch (tsError) {
             tsConsoleWarn("Timesaver Artius Browser settings save failed", tsError);
@@ -739,7 +773,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         if (!tsShell || !tsMain || !tsWrap) {
             return;
         }
-        const tsScale = Math.max(0.6, Math.min(1, Number(this.tsState.tsToolbarScale) || 1));
+        const tsScale = Math.max(0.85, Math.min(1, Number(this.tsState.tsToolbarScale) || 1));
         tsShell.style.setProperty("--ts-toolbar-scale", String(tsScale));
         const tsRawNaturalHeight = tsMain.scrollHeight || tsMain.offsetHeight || 0;
         if (tsRawNaturalHeight <= 0) {
@@ -767,8 +801,8 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         let tsDragStartY = 0;
         let tsDragStartScale = 1;
         let tsActivePointerId = null;
-        // Fixed sensitivity (scale units per drag pixel). A full 0.4-unit
-        // range (0.6 → 1.0) takes ~100 px of drag regardless of the
+        // Fixed sensitivity (scale units per drag pixel). A full 0.15-unit
+        // range (0.85 → 1.0) takes ~100 px of drag regardless of the
         // current toolbar layout. Using a constant avoids the
         // 1.2.0 bug where scrollHeight (captured at drag start) shrank
         // with the inverse-scale width hack, making the slider feel
@@ -780,7 +814,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             }
             const tsDeltaY = tsEvent.clientY - tsDragStartY;
             const tsRawScale = tsDragStartScale + tsDeltaY * tsSensitivity;
-            const tsClampedScale = Math.max(0.6, Math.min(1, tsRawScale));
+            const tsClampedScale = Math.max(0.85, Math.min(1, tsRawScale));
             this.tsState.tsToolbarScale = tsClampedScale;
             this.tsApplyToolbarScale();
         };
@@ -800,7 +834,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             tsEvent.preventDefault();
             tsActivePointerId = tsEvent.pointerId;
             tsDragStartY = tsEvent.clientY;
-            tsDragStartScale = Math.max(0.6, Math.min(1, Number(this.tsState.tsToolbarScale) || 1));
+            tsDragStartScale = Math.max(0.85, Math.min(1, Number(this.tsState.tsToolbarScale) || 1));
             tsResizer.dataset.dragging = "true";
             tsResizer.setPointerCapture?.(tsEvent.pointerId);
             tsResizer.addEventListener("pointermove", tsOnPointerMove);
@@ -870,7 +904,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             ${tsPanelStyles}
             <div class="ts-shell" tabindex="0">
                 <div class="ts-toolbar">
-                    <div class="ts-title"><a class="ts-title-link" href="https://github.com/AlexYez/comfyui-artius-browser" target="_blank" rel="noreferrer noopener"></a><span class="ts-version" hidden></span><a class="ts-donate" href="https://timesavervfx.com/donate/" target="_blank" rel="noreferrer noopener"></a><a class="ts-update-badge" href="https://github.com/AlexYez/comfyui-artius-browser/releases" target="_blank" rel="noreferrer noopener" hidden></a><button class="ts-help-toggle" type="button">?</button></div>
+                    <div class="ts-title"><a class="ts-title-link" href="https://github.com/AlexYez/comfyui-artius-browser" target="_blank" rel="noreferrer noopener"></a><span class="ts-version" hidden></span><a class="ts-donate" href="https://timesavervfx.com/donate/" target="_blank" rel="noreferrer noopener"></a><a class="ts-update-badge" href="https://github.com/AlexYez/comfyui-artius-browser/releases" target="_blank" rel="noreferrer noopener" hidden></a><button class="ts-settings-toggle" type="button" aria-label="Browser preferences" title="Browser preferences">⚙</button><button class="ts-help-toggle" type="button">?</button></div>
                     <div class="ts-toolbar-main-wrap">
                     <div class="ts-toolbar-main">
                         <div class="ts-toolbar-cluster ts-section-group">
@@ -884,6 +918,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
                         <div class="ts-toolbar-cluster ts-root-group">
                             <select class="ts-root-select"></select>
                         </div>
+                        <nav class="ts-folder-nav" aria-label="Folder navigation"><button type="button" data-nav="back" aria-label="Back" title="Back">‹</button><button type="button" data-nav="forward" aria-label="Forward" title="Forward">›</button><button type="button" data-nav="up" aria-label="Up one folder" title="Up one folder">↑</button><div class="ts-breadcrumbs"></div></nav>
                         <div class="ts-toolbar-cluster ts-type-cluster">
                             <div class="ts-type-chips"></div>
                         </div>
@@ -902,11 +937,13 @@ export class TSArtiusBrowserPanel extends HTMLElement {
                             <span class="ts-autoscan-label"></span>
                         </button>
                         <button class="ts-rescan" type="button"></button>
-                        <button class="ts-compare-selected" type="button"></button>
-                        <button class="ts-download-selected" type="button"></button>
-                        <button class="ts-delete-selected" type="button"></button>
                         <button class="ts-rebuild-cache" type="button"></button>
+                        <button class="ts-toolbar-overflow-button" type="button" aria-haspopup="true" aria-expanded="false" aria-label="More controls" title="More controls">⋯</button>
                     </div>
+                    </div>
+                    <div class="ts-toolbar-overflow" role="group" aria-label="More browser controls" hidden></div>
+                    <div class="ts-selection-bar" role="toolbar" aria-label="Selected item actions" hidden>
+                        <span class="ts-selection-count"></span><button class="ts-compare-selected" type="button"></button><button class="ts-download-selected" type="button"></button><button class="ts-delete-selected" type="button"></button>
                     </div>
                     <div class="ts-toolbar-resizer" role="separator" aria-orientation="horizontal" title=""></div>
                     <div class="ts-filter-panel" data-open="false" hidden>
@@ -957,6 +994,28 @@ export class TSArtiusBrowserPanel extends HTMLElement {
                         <div class="ts-shortcuts-body"></div>
                     </div>
                 </div>
+                <div class="ts-preferences" data-open="false" role="dialog" aria-modal="true" aria-label="Browser preferences" hidden>
+                    <section class="ts-preferences-panel"><header><strong>Browser preferences</strong><button class="ts-preferences-close" type="button" aria-label="Close">×</button></header>
+                        <label>Preset <select data-pref-preset><option value="">Choose a preset</option><option value="finder">Finder</option><option value="compact">Compact</option><option value="classic">Classic</option></select></label>
+                        <label>Appearance <select data-pref="appearance"><option value="finder">Finder</option><option value="classic">Classic</option></select></label>
+                        <label>Toolbar labels <select data-pref="toolbar_style"><option value="icons">Compact icons</option><option value="labels">Text labels</option></select></label>
+                        <label>Filenames <input type="checkbox" data-pref="show_filenames"></label>
+                        <label>Metadata <select data-pref="metadata_style"><option value="text">Text</option><option value="badges">Badges</option><option value="hover">On hover</option><option value="hidden">Hidden</option></select></label>
+                        <fieldset><legend>Metadata fields</legend><div class="ts-pref-metadata"></div></fieldset>
+                        <label>Card background <select data-pref="card_background"><option value="transparent">Transparent</option><option value="theme">Theme surface</option></select></label>
+                        <label>Corner rounding <input type="range" min="0" max="24" step="1" data-pref="corner_radius"></label>
+                        <label>Card border <input type="checkbox" data-pref="card_border"></label>
+                        <label>Animate layout <input type="checkbox" data-pref="animate_layout"></label>
+                        <label>Inline video previews <input type="checkbox" data-pref="inline_video"></label>
+                        <label>Loop inline videos <input type="checkbox" data-pref="inline_video_loop"></label>
+                        <label>Mute inline videos <input type="checkbox" data-pref="inline_video_muted"></label>
+                        <label>Include subfolders <input type="checkbox" data-pref="recurse"></label>
+                        <label>Remember settings per root <input type="checkbox" data-pref="root_memory"></label>
+                        <fieldset><legend>Toolbar controls</legend><div class="ts-pref-controls"></div></fieldset>
+                        <details class="ts-pref-about"><summary>About Artius Browser</summary><div><span class="ts-about-version"></span><a href="https://github.com/AlexYez/comfyui-artius-browser" target="_blank" rel="noreferrer noopener">Source and updates</a><a href="https://timesavervfx.com/donate/" target="_blank" rel="noreferrer noopener">Donate</a></div></details>
+                        <div class="ts-pref-actions"><button class="ts-preferences-reset" type="button">Reset defaults</button><button class="ts-preferences-done" type="button">Done</button></div>
+                    </section>
+                </div>
             </div>
         `;
 
@@ -965,6 +1024,8 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             tsToolbar: this.shadowRoot.querySelector(".ts-toolbar"),
             tsToolbarMainWrap: this.shadowRoot.querySelector(".ts-toolbar-main-wrap"),
             tsToolbarMain: this.shadowRoot.querySelector(".ts-toolbar-main"),
+            tsToolbarOverflowButton: this.shadowRoot.querySelector(".ts-toolbar-overflow-button"),
+            tsToolbarOverflow: this.shadowRoot.querySelector(".ts-toolbar-overflow"),
             tsToolbarResizer: this.shadowRoot.querySelector(".ts-toolbar-resizer"),
             tsTitle: this.shadowRoot.querySelector(".ts-title"),
             tsTitleLink: this.shadowRoot.querySelector(".ts-title-link"),
@@ -972,6 +1033,8 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             tsDonate: this.shadowRoot.querySelector(".ts-donate"),
             tsUpdateBadge: this.shadowRoot.querySelector(".ts-update-badge"),
             tsHelpToggle: this.shadowRoot.querySelector(".ts-help-toggle"),
+            tsSettingsToggle: this.shadowRoot.querySelector(".ts-settings-toggle"),
+            tsPreferences: this.shadowRoot.querySelector(".ts-preferences"),
             tsSectionAssets: this.shadowRoot.querySelector(".ts-section-assets"),
             tsSectionWorkflows: this.shadowRoot.querySelector(".ts-section-workflows"),
             tsSearch: this.shadowRoot.querySelector(".ts-search"),
@@ -980,6 +1043,8 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             tsTypeChips: this.shadowRoot.querySelector(".ts-type-chips"),
             tsRootGroup: this.shadowRoot.querySelector(".ts-root-group"),
             tsRootSelect: this.shadowRoot.querySelector(".ts-root-select"),
+            tsFolderNav: this.shadowRoot.querySelector(".ts-folder-nav"),
+            tsBreadcrumbs: this.shadowRoot.querySelector(".ts-breadcrumbs"),
             tsSortSelect: this.shadowRoot.querySelector(".ts-sort-select"),
             tsSortDirection: this.shadowRoot.querySelector(".ts-sort-direction"),
             tsModeFlat: this.shadowRoot.querySelector(".ts-mode-flat"),
@@ -1005,6 +1070,8 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             tsCompareSelected: this.shadowRoot.querySelector(".ts-compare-selected"),
             tsDownloadSelected: this.shadowRoot.querySelector(".ts-download-selected"),
             tsDeleteSelected: this.shadowRoot.querySelector(".ts-delete-selected"),
+            tsSelectionBar: this.shadowRoot.querySelector(".ts-selection-bar"),
+            tsSelectionCount: this.shadowRoot.querySelector(".ts-selection-count"),
             tsProgress: this.shadowRoot.querySelector(".ts-progress"),
             tsProgressFill: this.shadowRoot.querySelector(".ts-progress-fill"),
             tsProgressCaption: this.shadowRoot.querySelector(".ts-progress-caption"),
@@ -1056,6 +1123,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             if (!this.tsState.tsSettingsHydrated) {
                 return;
             }
+            this.tsUpdateToolbarOverflow();
             // Dedup against same-height re-fires. Inner .ts-toolbar-main
             // has width: calc(100% / scale), so changing scale also
             // changes its layout width and re-triggers this observer; the
@@ -1084,6 +1152,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             this.tsGridRenderForce = true;
             if (tsInvalidateMetrics) {
                 this.tsInvalidateGridMetrics();
+                this.tsBeginGridLayoutTransition();
             } else {
                 this.tsLastGridMarkupKey = "";
             }
@@ -1099,7 +1168,64 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         });
     }
 
+    tsBeginGridLayoutTransition() {
+        const content = this.tsRefs?.tsGalleryContent;
+        if (!content || !this.tsState.tsBrowserPreferences?.animate_layout
+            || window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+            if (content) delete content.dataset.layoutTransition;
+            window.clearTimeout(this.tsLayoutTransitionTimer);
+            return;
+        }
+        window.clearTimeout(this.tsLayoutTransitionTimer);
+        content.dataset.layoutTransition = "true";
+        this.tsLayoutTransitionTimer = window.setTimeout(() => {
+            if (this.tsRefs?.tsGalleryContent) delete this.tsRefs.tsGalleryContent.dataset.layoutTransition;
+        }, 180);
+    }
+
     tsBindEvents() {
+        this.tsRefs.tsSettingsToggle.addEventListener("click", () => this.tsTogglePreferences(true));
+        this.tsRefs.tsToolbarOverflowButton.addEventListener("click", () => {
+            const open = this.tsRefs.tsToolbarOverflow.hidden;
+            this.tsRefs.tsToolbarOverflow.hidden = !open;
+            this.tsRefs.tsToolbarOverflowButton.setAttribute("aria-expanded", String(open));
+            this.tsRefs.tsToolbarOverflowButton.focus();
+        });
+        this.tsRefs.tsPreferences.querySelector(".ts-preferences-close").addEventListener("click", () => this.tsTogglePreferences(false));
+        this.tsRefs.tsPreferences.querySelector(".ts-preferences-done").addEventListener("click", () => this.tsTogglePreferences(false));
+        this.tsRefs.tsPreferences.addEventListener("click", (event) => { if (event.target === this.tsRefs.tsPreferences) this.tsTogglePreferences(false); });
+        this.tsRefs.tsPreferences.querySelector(".ts-preferences-reset").addEventListener("click", () => {
+            const previousRecurse = this.tsState.tsBrowserPreferences.recurse;
+            this.tsState.tsBrowserPreferences = tsNormalizeBrowserPreferences({});
+            this.tsRenderPreferences();
+            this.tsApplyPreferencesAndRefreshAssets(previousRecurse);
+            this.tsQueueSaveUISettings();
+        });
+        this.tsRefs.tsPreferences.addEventListener("change", (event) => {
+            const preset = event.target.closest("[data-pref-preset]");
+            if (preset?.value) {
+                const previousRecurse = this.tsState.tsBrowserPreferences.recurse;
+                const values = preset.value === "classic"
+                    ? { appearance: "classic", toolbar_style: "labels", show_filenames: true, metadata_style: "badges", card_background: "theme", card_border: true }
+                    : preset.value === "compact"
+                        ? { appearance: "finder", toolbar_style: "icons", show_filenames: false, metadata_style: "badges", corner_radius: 4 }
+                        : { ...tsNormalizeBrowserPreferences({}) };
+                this.tsState.tsBrowserPreferences = tsNormalizeBrowserPreferences({ ...this.tsState.tsBrowserPreferences, ...values });
+                this.tsApplyPreferencesAndRefreshAssets(previousRecurse);
+                this.tsRenderPreferences();
+                this.tsQueueSaveUISettings();
+                preset.value = "";
+                return;
+            }
+            const target = event.target.closest("[data-pref]");
+            if (!target) return;
+            const prefKey = target.dataset.pref;
+            const value = target.type === "checkbox" ? target.checked : (target.type === "range" ? Number(target.value) : target.value);
+            const previousRecurse = this.tsState.tsBrowserPreferences.recurse;
+            this.tsState.tsBrowserPreferences = tsNormalizeBrowserPreferences({ ...this.tsState.tsBrowserPreferences, [prefKey]: value });
+            this.tsApplyPreferencesAndRefreshAssets(previousRecurse);
+            this.tsQueueSaveUISettings();
+        });
         this.tsRefs.tsSectionAssets.addEventListener("click", () => {
             void this.tsSetSection("assets");
         });
@@ -1113,11 +1239,27 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             this.tsDebouncedSearch();
         });
         this.tsRefs.tsRootSelect.addEventListener("change", (tsEvent) => {
+            this.tsStopInlineVideos();
+            const prefs = this.tsState.tsBrowserPreferences;
+            if (prefs.root_memory && this.tsState.tsRootId) {
+                prefs.root_profiles[this.tsState.tsRootId] = tsCaptureRootProfile(this.tsState, prefs);
+            }
             this.tsState.tsRootId = tsEvent.target.value || "all";
             this.tsState.tsFolder = "";
+            if (prefs.root_memory && prefs.root_profiles[this.tsState.tsRootId]) tsApplyRootProfile(this.tsState, prefs.root_profiles[this.tsState.tsRootId], prefs);
+            this.tsSyncSectionSettingsFromActive();
+            this.tsPushFolderHistory();
+            this.tsRefreshProfileControls();
+            this.tsRefs.tsSearch.value = String(this.tsState.tsSearch || "");
             this.tsRememberAssetLocation();
             this.tsQueueSaveUISettings();
             this.tsFetchAssets(true);
+        });
+        this.tsRefs.tsFolderNav.addEventListener("click", (event) => {
+            const button = event.target.closest("[data-nav-folder],[data-nav]");
+            if (!button) return;
+            if (button.dataset.navFolder !== undefined) this.tsNavigateFolder(button.dataset.navFolder);
+            else this.tsTraverseFolderHistory(button.dataset.nav);
         });
         this.tsRefs.tsSortSelect.addEventListener("change", (tsEvent) => {
             this.tsState.tsSortKey = tsEvent.target.value;
@@ -1223,6 +1365,227 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         this.tsBindTreeResizer();
         this.tsApplyTreeWidth();
         this.tsBindApiEvents();
+    }
+
+    tsTogglePreferences(open) {
+        if (open) this.tsPreferencesReturnFocus = this.shadowRoot.activeElement;
+        this.tsRefs.tsPreferences.hidden = !open;
+        this.tsRefs.tsPreferences.dataset.open = String(Boolean(open));
+        if (open) {
+            this.tsRenderPreferences();
+            queueMicrotask(() => this.tsRefs.tsPreferences.querySelector("button,select,input")?.focus?.());
+        } else {
+            queueMicrotask(() => (this.tsPreferencesReturnFocus || this.tsRefs.tsSettingsToggle)?.focus?.());
+        }
+    }
+
+    tsRenderPreferences() {
+        const prefs = this.tsState.tsBrowserPreferences;
+        const aboutVersion = this.tsRefs.tsPreferences.querySelector(".ts-about-version");
+        if (aboutVersion) aboutVersion.textContent = this.tsRefs.tsVersion?.textContent?.trim() || "Version unavailable";
+        for (const input of this.tsRefs.tsPreferences.querySelectorAll("[data-pref]")) {
+            const value = prefs[input.dataset.pref];
+            if (input.type === "checkbox") input.checked = Boolean(value);
+            else input.value = String(value ?? "");
+        }
+        const names = { section: "Assets and Workflows", root: "Root folder", types: "File types", sort: "Sort", tree: "Flat and folder tree", size: "Preview size", favorites: "Favorites", filters: "Filters", rescan: "Rescan", compare: "Compare", download: "Download", delete: "Delete", autoscan: "Autoscan", rebuild: "Rebuild cache" };
+        this.tsRefs.tsPreferences.querySelector(".ts-pref-controls").innerHTML = tsPreferenceControls.map((key) => `<label>${names[key]} <input type="checkbox" data-control="${key}" ${(key in prefs.selection_actions ? prefs.selection_actions[key] : prefs.visible_controls.includes(key)) ? "checked" : ""}></label>`).join("");
+        this.tsRefs.tsPreferences.querySelector(".ts-pref-controls").onchange = (event) => {
+            const input = event.target.closest("[data-control]");
+            if (!input) return;
+            const current = this.tsState.tsBrowserPreferences;
+            const control = input.dataset.control;
+            if (control in current.selection_actions) {
+                this.tsState.tsBrowserPreferences = tsNormalizeBrowserPreferences({ ...current, selection_actions: { ...current.selection_actions, [control]: input.checked } });
+            } else {
+                const next = new Set(current.visible_controls);
+                input.checked ? next.add(control) : next.delete(control);
+                this.tsState.tsBrowserPreferences = tsNormalizeBrowserPreferences({ ...current, visible_controls: [...next] });
+            }
+            this.tsApplyBrowserPreferences();
+            this.tsQueueSaveUISettings();
+        };
+        const metadataNames = { type: "Type", resolution: "Resolution", fps: "Frame rate", duration: "Duration", generation_time: "Generation time", size_bytes: "File size" };
+        const metadataRoot = this.tsRefs.tsPreferences.querySelector(".ts-pref-metadata");
+        metadataRoot.innerHTML = ["image", "video", "audio", "3d"].map((type) => `<div class="ts-pref-media"><strong>${type === "3d" ? "3D" : type[0].toUpperCase() + type.slice(1)}</strong>${["type", "resolution", "fps", "duration", "generation_time", "size_bytes"].map((field) => `<label>${metadataNames[field]} <input type="checkbox" data-meta-type="${type}" data-meta-field="${field}" ${prefs.metadata_fields[type].includes(field) ? "checked" : ""}></label>`).join("")}</div>`).join("");
+        metadataRoot.onchange = (event) => {
+            const input = event.target.closest("[data-meta-type]");
+            if (!input) return;
+            const type = input.dataset.metaType;
+            const current = this.tsState.tsBrowserPreferences;
+            const fields = new Set(current.metadata_fields[type]);
+            input.checked ? fields.add(input.dataset.metaField) : fields.delete(input.dataset.metaField);
+            const metadata_fields = { ...current.metadata_fields, [type]: [...fields] };
+            this.tsState.tsBrowserPreferences = tsNormalizeBrowserPreferences({ ...current, metadata_fields });
+            this.tsApplyBrowserPreferences();
+            this.tsQueueSaveUISettings();
+        };
+    }
+
+    tsApplyBrowserPreferences() {
+        const prefs = this.tsState.tsBrowserPreferences;
+        const mapping = { section: ".ts-section-group", root: ".ts-root-group", types: ".ts-type-cluster", sort: ".ts-sort-group", tree: ".ts-mode-group", size: ".ts-preview-size", favorites: ".ts-favorites-toggle", filters: ".ts-filters-toggle", rescan: ".ts-rescan", autoscan: ".ts-autoscan", rebuild: ".ts-rebuild-cache" };
+        for (const [key, selector] of Object.entries(mapping)) {
+            const element = this.shadowRoot.querySelector(selector);
+            if (element) element.hidden = !prefs.visible_controls.includes(key);
+        }
+        this.tsRefs.tsShell.dataset.appearance = prefs.appearance;
+        this.tsRefs.tsShell.dataset.toolbarStyle = prefs.toolbar_style;
+        this.tsRefs.tsGalleryContent.dataset.appearance = prefs.appearance;
+        this.tsRefs.tsGalleryContent.dataset.showFilenames = String(prefs.show_filenames);
+        this.tsRefs.tsGalleryContent.dataset.metadataStyle = prefs.metadata_style;
+        this.tsRefs.tsGalleryContent.dataset.cardBackground = prefs.card_background;
+        this.tsRefs.tsGalleryContent.dataset.cardBorder = String(prefs.card_border);
+        this.tsRefs.tsGalleryContent.dataset.animateLayout = String(prefs.animate_layout);
+        this.tsRefs.tsGalleryContent.style.setProperty("--ts-pref-card-radius", `${prefs.corner_radius}px`);
+        this.tsInvalidateGridMetrics();
+        this.tsScheduleGridRender(true, true);
+        this.tsRenderToolbarForSection();
+        this.tsUpdateToolbarOverflow();
+        this.tsRenderSelectionButtons();
+    }
+
+    tsApplyPreferencesAndRefreshAssets(previousRecurse) {
+        this.tsApplyBrowserPreferences();
+        if (previousRecurse !== this.tsState.tsBrowserPreferences.recurse
+            && !this.tsIsWorkflowSection()
+            && this.tsState.tsMode === "tree") {
+            this.tsFetchAssets(true);
+        }
+    }
+
+    tsUpdateToolbarOverflow() {
+        const main = this.tsRefs?.tsToolbarMain;
+        const menu = this.tsRefs?.tsToolbarOverflow;
+        if (!main || !menu) return;
+        if (!this.tsOverflowHomes) {
+            const selectors = [".ts-section-group", ".ts-sort-group", ".ts-preview-size", ".ts-favorites-toggle", ".ts-filters-toggle", ".ts-autoscan", ".ts-rescan", ".ts-rebuild-cache", ".ts-type-cluster", ".ts-root-group", ".ts-folder-nav"];
+            this.tsOverflowHomes = selectors.map((selector) => {
+                const element = main.querySelector(selector);
+                return element ? { element, next: element.nextSibling } : null;
+            }).filter(Boolean);
+        }
+        const width = this.tsRefs.tsToolbarMainWrap.clientWidth || this.clientWidth || 0;
+        const narrow = width < 1100;
+        if (narrow) {
+            const move = new Set([".ts-section-group", ".ts-sort-group", ".ts-preview-size", ".ts-favorites-toggle", ".ts-filters-toggle", ".ts-autoscan", ".ts-rescan", ".ts-rebuild-cache"]);
+            if (width < 650) move.add(".ts-folder-nav");
+            if (width < 470) move.add(".ts-type-cluster");
+            if (width < 345) move.add(".ts-root-group");
+            for (const home of this.tsOverflowHomes) {
+                const { element, next } = home;
+                const selector = element.matches(".ts-root-group") ? ".ts-root-group" : element.matches(".ts-type-cluster") ? ".ts-type-cluster" : element.matches(".ts-folder-nav") ? ".ts-folder-nav" : element.className.split(" ").find((name) => ["ts-section-group", "ts-sort-group", "ts-preview-size", "ts-favorites-toggle", "ts-filters-toggle", "ts-autoscan", "ts-rescan", "ts-rebuild-cache"].includes(name))?.replace(/^/, ".");
+                if (move.has(selector)) {
+                    if (element.parentNode !== menu) menu.append(element);
+                } else if (element.parentNode !== main) {
+                    main.insertBefore(element, next?.parentNode === main ? next : this.tsRefs.tsToolbarOverflowButton);
+                }
+            }
+            this.tsRefs.tsToolbarOverflowButton.hidden = ![...menu.children].some((element) => !element.hidden);
+        } else {
+            this.tsRefs.tsToolbarOverflow.hidden = true;
+            this.tsRefs.tsToolbarOverflowButton.setAttribute("aria-expanded", "false");
+            for (const { element, next } of this.tsOverflowHomes) {
+                if (element.parentNode !== main) main.insertBefore(element, next?.parentNode === main ? next : this.tsRefs.tsToolbarOverflowButton);
+            }
+            this.tsRefs.tsToolbarOverflowButton.hidden = true;
+        }
+        // Labels, translated folder names and font scaling can exceed the
+        // breakpoint estimate. Use the measured row as the final authority.
+        for (const { element } of this.tsOverflowHomes) {
+            if (main.scrollWidth <= main.clientWidth + 1) break;
+            if (element.parentNode !== main || element.hidden) continue;
+            this.tsRefs.tsToolbarOverflowButton.hidden = false;
+            menu.append(element);
+        }
+        this.tsRefs.tsToolbarOverflowButton.hidden = ![...menu.children].some((element) => !element.hidden);
+    }
+
+    tsPushFolderHistory() {
+        const entry = { rootId: this.tsState.tsRootId, folder: this.tsState.tsFolder || "" };
+        const current = this.tsFolderHistory[this.tsFolderHistoryIndex];
+        if (current?.rootId === entry.rootId && current?.folder === entry.folder) return;
+        this.tsFolderHistory = this.tsFolderHistory.slice(0, this.tsFolderHistoryIndex + 1);
+        this.tsFolderHistory.push(entry);
+        this.tsFolderHistoryIndex = this.tsFolderHistory.length - 1;
+        this.tsRenderFolderNavigation();
+    }
+
+    tsCreateInlineVideoObserver() {
+        this.tsInlineVideoObserver?.disconnect?.();
+        this.tsInlineVideoObserver = null;
+        if (typeof IntersectionObserver !== "function" || !this.tsRefs?.tsGalleryScroll) return;
+        this.tsInlineVideoObserver = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+                if (!entry.isIntersecting && entry.target === this.tsActiveInlineVideo) {
+                    this.tsStopInlineVideos();
+                }
+            }
+        }, { root: this.tsRefs.tsGalleryScroll, threshold: 0.01 });
+        if (this.tsActiveInlineVideo) this.tsInlineVideoObserver.observe(this.tsActiveInlineVideo);
+    }
+
+    tsRefreshProfileControls() {
+        this.tsRefs.tsPreviewSize.value = String(this.tsState.tsPreviewSize);
+        this.tsRenderSortOptions();
+        this.tsRenderSortDirection();
+        this.tsRenderTypeChips();
+        this.tsRenderFavoritesToggle();
+        this.tsRenderFilterPanel();
+        this.tsRenderModeButtons();
+    }
+
+    tsNavigateFolder(folder) {
+        this.tsState.tsFolder = tsNormalizeFolderPath(folder);
+        this.tsState.tsMode = "tree";
+        if (this.tsIsWorkflowSection()) this.tsWorkflowSelectedFolder = this.tsState.tsFolder;
+        else this.tsRememberAssetLocation();
+        this.tsSyncSectionSettingsFromActive();
+        this.tsPushFolderHistory();
+        this.tsQueueSaveUISettings();
+        this.tsFetchAssets(true);
+    }
+
+    tsTraverseFolderHistory(direction) {
+        if (direction === "up") {
+            const parts = String(this.tsState.tsFolder || "").split("/").filter(Boolean);
+            parts.pop();
+            this.tsNavigateFolder(parts.join("/"));
+            return;
+        }
+        const next = this.tsFolderHistoryIndex + (direction === "back" ? -1 : 1);
+        if (next < 0 || next >= this.tsFolderHistory.length) return;
+        this.tsFolderHistoryIndex = next;
+        const entry = this.tsFolderHistory[next];
+        this.tsState.tsRootId = entry.rootId;
+        this.tsState.tsFolder = entry.folder;
+        this.tsState.tsMode = "tree";
+        if (this.tsIsWorkflowSection()) this.tsWorkflowSelectedFolder = entry.folder;
+        else this.tsRememberAssetLocation();
+        this.tsRenderRootOptions();
+        this.tsSyncSectionSettingsFromActive();
+        this.tsRenderFolderNavigation();
+        this.tsQueueSaveUISettings();
+        this.tsFetchAssets(true);
+    }
+
+    tsRenderFolderNavigation() {
+        if (!this.tsRefs?.tsBreadcrumbs) return;
+        const rootLabel = this.tsState.tsRootId === "all"
+            ? this.tsT("label.allRoots", "All Folders")
+            : this.tsState.tsRoots.find((root) => String(root.root_id ?? root.id) === String(this.tsState.tsRootId))?.label || this.tsState.tsRootId || this.tsT("label.allRoots", "All Folders");
+        const parts = String(this.tsState.tsFolder || "").split("/").filter(Boolean);
+        const crumbs = [{ label: rootLabel, path: "" }];
+        let path = "";
+        for (const part of parts) { path = path ? `${path}/${part}` : part; crumbs.push({ label: part, path }); }
+        this.tsRefs.tsBreadcrumbs.innerHTML = crumbs.map((crumb, index) => `${index ? '<span aria-hidden="true">/</span>' : ""}<button type="button" data-nav-folder="${this.tsEscapeAttribute(crumb.path)}" ${index === crumbs.length - 1 ? 'aria-current="location"' : ""}>${this.tsEscapeHTML(crumb.label)}</button>`).join("");
+        const back = this.tsRefs.tsFolderNav.querySelector('[data-nav="back"]');
+        const forward = this.tsRefs.tsFolderNav.querySelector('[data-nav="forward"]');
+        const up = this.tsRefs.tsFolderNav.querySelector('[data-nav="up"]');
+        back.disabled = this.tsFolderHistoryIndex <= 0;
+        forward.disabled = this.tsFolderHistoryIndex >= this.tsFolderHistory.length - 1;
+        up.disabled = !this.tsState.tsFolder;
+        this.tsRefs.tsFolderNav.hidden = this.tsIsWorkflowSection() || !this.tsState.tsBrowserPreferences.visible_controls.includes("tree");
     }
 
     tsBindApiEvents() {
@@ -1482,6 +1845,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         // leave them in the previous language.
         this.tsRenderRootOptions();
         this.tsRenderSortDirection();
+        this.tsRenderFolderNavigation();
         this.tsViewer?.tsSetLocale(this.tsState.tsLocale);
     }
 
@@ -1535,6 +1899,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         this.tsRefs.tsCompareSelected.style.display = tsWorkflowHiddenDisplay;
         this.tsRefs.tsDownloadSelected.style.display = tsWorkflowHiddenDisplay;
         this.tsRefs.tsDeleteSelected.style.display = tsWorkflowHiddenDisplay;
+        this.tsRenderFolderNavigation();
         // Assets <-> Workflows toggles a large block of controls (root, type
         // chips, autoscan, rescan, rebuild, delete), which changes the
         // toolbar's natural unscaled height. The scaled wrap clips to a
@@ -1547,6 +1912,34 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             this.tsLastRenderedToolbarSection = tsWorkflowSection;
             this.tsLastObservedToolbarHeight = 0;
             this.tsApplyToolbarScale();
+        }
+        this.tsApplyToolbarIconStyle();
+    }
+
+    tsApplyToolbarIconStyle() {
+        const compact = this.tsState.tsBrowserPreferences.toolbar_style === "icons";
+        const icons = {
+            "ts-section-assets": '<path d="M3 5h18v14H3zM3 9h18"/><path d="M7 7h.01M10 7h.01"/>',
+            "ts-section-workflows": '<path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/>',
+            "ts-mode-flat": '<path d="M4 5h16M4 12h16M4 19h16"/>',
+            "ts-mode-tree": '<path d="M5 4v16M5 7h6m-6 5h10m-10 5h6M11 7v5m4 0v5"/>',
+            "ts-favorites-toggle": '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9z"/>',
+            "ts-filters-toggle": '<path d="M4 6h16M7 12h10m-7 6h4"/>',
+            "ts-autoscan": '<path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.5 9A7 7 0 0 1 18 6l2 6M4 12l2 6a7 7 0 0 0 12.5-3"/>',
+            "ts-rescan": '<path d="M20 7v5h-5M4 17v-5h5"/><path d="M5 9a7 7 0 0 1 12-3l3 3M4 15l3 3a7 7 0 0 0 12-3"/>',
+            "ts-compare-selected": '<path d="M4 5h7v14H4zM13 5h7v14h-7z"/>',
+            "ts-download-selected": '<path d="M12 3v12m-5-5 5 5 5-5M4 20h16"/>',
+            "ts-delete-selected": '<path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5m4-5v5"/>',
+            "ts-rebuild-cache": '<path d="M20 7v5h-5M4 17v-5h5"/><path d="M5 9a7 7 0 0 1 12-3l3 3M4 15l3 3a7 7 0 0 0 12-3"/>',
+        };
+        for (const [selector, paths] of Object.entries(icons)) {
+            const button = this.shadowRoot.querySelector(`.${selector}`);
+            if (!button) continue;
+            const label = button.getAttribute("aria-label") || button.title || button.textContent.trim();
+            button.setAttribute("aria-label", label);
+            button.dataset.compactLabel = label;
+            if (compact) button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${paths}</g></svg><span class="ts-icon-label">${this.tsEscapeHTML(label)}</span>`;
+            else button.textContent = label;
         }
     }
 
@@ -1579,6 +1972,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             ]
             : [
                 ["created_at", this.tsT("sort.created_at", "Date")],
+                ["mtime", this.tsT("sort.modified", "Modified")],
                 ["filename", tsFilenameLabel],
                 ["size_bytes", this.tsT("sort.size_bytes", "Size")],
             ];
@@ -1617,14 +2011,21 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         if (this.tsLastTypeChipKey !== tsChipKey) {
             this.tsLastTypeChipKey = tsChipKey;
             this.tsRefs.tsTypeChips.innerHTML = tsTypeOrder
-                .map((tsType) => `
+                .map((tsType) => {
+                    const icons = {
+                        image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>',
+                        video: '<rect x="3" y="5" width="13" height="14" rx="2"/><path d="m16 10 5-3v10l-5-3z"/>',
+                        audio: '<path d="M4 10v4m4-8v12m4-15v18m4-14v10m4-7v4"/>',
+                        "3d": '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.7 8-4.7M12 12.2V21"/>',
+                    };
+                    return `
                     <button
                         class="ts-chip"
                         type="button"
                         data-type="${tsType}"
                         title="${this.tsEscapeAttribute(this.tsT(`tooltip.type.${tsType}`, `Toggle ${tsType}`))}"
-                    >${this.tsEscapeHTML(this.tsT(`type.${tsType}`, tsType))}</button>
-                `)
+                    ><svg class="ts-type-icon" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${icons[tsType]}</g></svg><span>${this.tsEscapeHTML(this.tsT(`type.${tsType}`, tsType))}</span></button>
+                `; })
                 .join("");
         }
         this.tsRefs.tsTypeChips.querySelectorAll("[data-type]").forEach((tsButton) => {
@@ -1632,6 +2033,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             tsButton.dataset.active = tsActive;
             tsButton.setAttribute("aria-pressed", tsActive);
         });
+        this.tsApplyToolbarIconStyle();
     }
 
     tsHandleTypeChipClick(tsEvent) {
@@ -2031,6 +2433,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             filters: this.tsBuildActiveFilters(),
             searchScope: this.tsIsWorkflowSection() ? "filename" : this.tsState.tsSearchScope,
             favoritesOnly: !this.tsIsWorkflowSection() && Boolean(this.tsState.tsFavoritesOnly),
+            recurse: this.tsState.tsBrowserPreferences.recurse,
             overrides: tsOverrides,
         });
     }
@@ -2432,6 +2835,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             this.tsQueueSaveUISettings();
         }
         this.tsRefs.tsRootSelect.value = this.tsState.tsRootId;
+        this.tsRenderFolderNavigation();
         this.tsRenderSortDirection();
     }
 
@@ -2477,7 +2881,8 @@ export class TSArtiusBrowserPanel extends HTMLElement {
     tsGetGridMetrics() {
         const tsViewportWidth = Math.max(0, Math.round(Number(this.tsRefs.tsGalleryScroll.clientWidth || 0)));
         const tsCardWidth = tsClamp(this.tsState.tsPreviewSize, tsPreviewSizeRange.min, tsPreviewSizeRange.max);
-        const tsMetricsKey = [tsViewportWidth, tsCardWidth, tsGridLayout.spacing].join("::");
+        const prefs = this.tsState.tsBrowserPreferences;
+        const tsMetricsKey = [tsViewportWidth, tsCardWidth, tsGridLayout.spacing, prefs.appearance, prefs.show_filenames, prefs.metadata_style].join("::");
         if (this.tsGridMetrics && this.tsGridMetricsKey === tsMetricsKey) {
             return this.tsGridMetrics;
         }
@@ -2487,10 +2892,16 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             previewSizeRange: tsPreviewSizeRange,
             gridLayout: tsGridLayout,
             cardChromeScale: tsCardChromeScale,
+            captionHeight: 48,
+            appearance: prefs.appearance,
+            showFilenames: prefs.show_filenames,
+            metadataStyle: prefs.metadata_style,
+            showMetadata: Object.values(prefs.metadata_fields).some((fields) => Array.isArray(fields) && fields.length > 0),
         });
         this.tsState.tsGridColumns = tsMetrics.tsColumns;
         this.tsState.tsGridRowHeight = tsMetrics.tsRowHeight;
         tsApplyGridMetricStyles(this.tsRefs.tsGalleryContent, tsMetrics);
+        this.tsRefs.tsGalleryContent.style.setProperty("--ts-card-caption-height", `${tsMetrics.tsCaptionHeight || 0}px`);
         this.tsGridMetrics = tsMetrics;
         this.tsGridMetricsKey = tsMetricsKey;
         return tsMetrics;
@@ -2732,6 +3143,10 @@ export class TSArtiusBrowserPanel extends HTMLElement {
                 : String(tsItem?.type || "").toUpperCase();
             return `<div class="ts-card-placeholder">${this.tsEscapeHTML(tsPlaceholderLabel)}</div>`;
         }
+        if (!this.tsIsWorkflowSection() && tsItem?.type === "video" && this.tsState.tsBrowserPreferences.inline_video) {
+            const mediaURL = tsItem.display_url || tsAssetFileURL(tsItem);
+            return `<video class="ts-inline-thumbnail" data-inline-video data-src="${this.tsEscapeAttribute(mediaURL)}" poster="${this.tsEscapeAttribute(tsPreviewURL)}" muted playsinline preload="none" aria-label="${this.tsEscapeAttribute(tsItem.filename || "Play video preview")}"></video><button class="ts-inline-play" type="button" data-action="inline-play" data-card-id="${tsItem.id}" aria-label="Play video preview" title="Play video preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></button>`;
+        }
         if (this.tsIsWorkflowSection() && tsItem?.preview_kind === "video" && tsPreviewURL) {
             // Plays on hover, not on sight. Autoplaying every visible card
             // meant N videos decoding continuously for as long as the sidebar
@@ -2789,7 +3204,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         for (let tsIndex = 0; tsIndex < tsCount; tsIndex += 1) {
             const tsColumn = tsIndex % tsColumns;
             const tsRow = Math.floor(tsIndex / tsColumns);
-            const tsLeft = tsPaddingLeft + tsColumn * (tsCardWidth + tsGap);
+            const tsLeft = Array.isArray(tsMetrics.tsColumnPositions) ? tsMetrics.tsColumnPositions[tsColumn] : tsPaddingLeft + tsColumn * (tsCardWidth + (tsMetrics.tsGapX ?? tsGap));
             const tsTop = tsPaddingTop + tsRow * tsRowHeight;
             tsCards.push(
                 `<div class="ts-card ts-card-skeleton" aria-hidden="true" style="width:${tsCardWidth}px;height:${tsCardHeight}px;transform:translate(${tsLeft}px,${tsTop}px);"><div class="ts-card-media"></div></div>`,
@@ -3021,18 +3436,28 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             if (tsNode && tsNode.tsCardMarkup === tsMarkup) {
                 tsExisting.delete(tsKey);
             } else {
+                const activeVideo = tsNode && this.tsActiveInlineVideo && tsNode.contains(this.tsActiveInlineVideo) ? this.tsActiveInlineVideo : null;
                 if (tsNode) {
                     tsExisting.delete(tsKey);
                     tsNode.remove();
                 }
                 this.tsCardTemplate.innerHTML = tsMarkup;
                 tsNode = this.tsCardTemplate.content.firstElementChild;
+                if (activeVideo) {
+                    const replacementVideo = tsNode.querySelector("[data-inline-video]");
+                    if (replacementVideo) {
+                        replacementVideo.replaceWith(activeVideo);
+                        activeVideo.closest(".ts-card")?.classList.add("ts-video-playing");
+                    } else {
+                        this.tsStopInlineVideos();
+                    }
+                }
                 tsNode.tsCardMarkup = tsMarkup;
                 tsFreshNodes.push(tsNode);
             }
             const tsColumn = tsIndex % tsMetrics.tsColumns;
             const tsRow = Math.floor(tsIndex / tsMetrics.tsColumns);
-            const tsLeft = tsMetrics.tsPaddingLeft + tsColumn * (tsMetrics.tsCardWidth + tsMetrics.tsGap);
+            const tsLeft = Array.isArray(tsMetrics.tsColumnPositions) ? tsMetrics.tsColumnPositions[tsColumn] : tsMetrics.tsPaddingLeft + tsColumn * (tsMetrics.tsCardWidth + (tsMetrics.tsGapX ?? tsMetrics.tsGap));
             const tsTop = tsMetrics.tsPaddingTop + tsRow * tsMetrics.tsRowHeight;
             const tsTransform = `translate(${tsLeft}px,${tsTop}px)`;
             if (tsNode.style.transform !== tsTransform) {
@@ -3049,11 +3474,13 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             }
         }
         for (const tsStale of tsExisting.values()) {
+            if (this.tsActiveInlineVideo && tsStale.contains(this.tsActiveInlineVideo)) this.tsStopInlineVideos();
             tsStale.remove();
         }
         if (tsFreshNodes.length) {
             tsContent.append(...tsFreshNodes);
         }
+        if (this.tsActiveInlineVideo?.isConnected) this.tsActiveInlineVideo.closest(".ts-card")?.classList.add("ts-video-playing");
     }
 
     // One card, WITHOUT its position, index or selection: those change on
@@ -3096,6 +3523,26 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         const tsShowCopyAction = !tsWorkflowSection
             && (tsItem.type === "video" || tsItem.type === "audio" ? Boolean(tsItem.has_prompt) : true);
         const tsShowWorkflowAction = !tsWorkflowSection && Boolean(tsItem.has_workflow);
+        const prefs = this.tsState.tsBrowserPreferences;
+        const selectedFields = prefs.metadata_fields[tsItem.type] || [];
+        const metadata = [];
+        const addMetadata = (field, value) => { if (selectedFields.includes(field) && value !== "" && value !== null && value !== undefined) metadata.push(String(value)); };
+        addMetadata("type", String(tsItem.type || "").toUpperCase());
+        addMetadata("resolution", tsResolutionBadge);
+        addMetadata("fps", tsFPSBadge);
+        if (selectedFields.includes("duration") && tsDurationBadge) metadata.push(`Dur ${tsDurationBadge}`);
+        const generationSeconds = Number(tsItem.generation_time_seconds);
+        if (selectedFields.includes("generation_time") && tsItem.generation_time_seconds !== null && tsItem.generation_time_seconds !== undefined && Number.isFinite(generationSeconds) && generationSeconds >= 0) {
+            const totalSeconds = Math.floor(generationSeconds);
+            metadata.push(`Gen ${String(Math.floor(totalSeconds / 60)).padStart(2, "0")}:${String(totalSeconds % 60).padStart(2, "0")}`);
+        }
+        if (Number(tsItem.size_bytes) > 0) {
+            const size = Number(tsItem.size_bytes);
+            const units = ["B", "KB", "MB", "GB", "TB"];
+            const unit = Math.min(units.length - 1, Math.floor(Math.log(size) / Math.log(1024)));
+            addMetadata("size_bytes", `${(size / (1024 ** unit)).toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`);
+        }
+        tsBadges.splice(0, tsBadges.length, ...(["badges", "hover"].includes(prefs.metadata_style) ? metadata : []));
         // [AI agent] Studio renders can be reopened in the session that
         // made them; the button only exists where that is possible.
         const tsExternalIds = new Set(
@@ -3161,11 +3608,12 @@ export class TSArtiusBrowserPanel extends HTMLElement {
                         ${tsWorkflowFolderBadge ? `
                             <div class="ts-card-badge" data-kind="workflow-folder" title="${this.tsEscapeAttribute(tsWorkflowFolderBadge)}">${this.tsEscapeHTML(tsWorkflowFolderBadge)}</div>
                         ` : ""}
-                        ${tsBadges.map((tsBadge, tsBadgeIndex) => `
-                            <div class="ts-card-badge" data-kind="${tsBadgeIndex === 0 ? "type" : "meta"}">${this.tsEscapeHTML(tsBadge)}</div>
+                        ${tsBadges.map((tsBadge) => `
+                            <div class="ts-card-badge" data-kind="meta">${this.tsEscapeHTML(tsBadge)}</div>
                         `).join("")}
                     </div>
                 </div>
+                ${!tsWorkflowSection && tsMetrics.tsShowCaption ? `<div class="ts-card-caption" data-metadata-style="${prefs.metadata_style}">${tsMetrics.tsShowFilenameCaption && prefs.show_filenames ? `<span class="ts-card-filename" title="${this.tsEscapeAttribute(tsItem.filename || "")}">${this.tsEscapeHTML(tsItem.filename || "")}</span>` : ""}${tsMetrics.tsShowMetadataCaption ? `<span class="ts-card-metadata">${metadata.map((value) => `<span>${this.tsEscapeHTML(value)}</span>`).join("")}</span>` : ""}</div>` : ""}
             </div>
         `.trim();
     }
@@ -3185,6 +3633,11 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         }
         this.tsRenderDownloadButton(tsSelectedItems, tsWorkflowSection);
         this.tsRenderCompareButton(tsSelectedItems, tsWorkflowSection);
+        const hasSelection = !tsWorkflowSection && tsSelectedItems.length > 0 && Object.values(this.tsState.tsBrowserPreferences.selection_actions).some(Boolean);
+        this.tsRefs.tsSelectionBar.hidden = !hasSelection;
+        this.tsRefs.tsSelectionCount.textContent = hasSelection ? `${tsSelectedItems.length} selected` : "";
+        for (const [key, button] of [["compare", this.tsRefs.tsCompareSelected], ["download", this.tsRefs.tsDownloadSelected], ["delete", this.tsRefs.tsDeleteSelected]]) button.hidden = !this.tsState.tsBrowserPreferences.selection_actions[key];
+        this.tsApplyToolbarIconStyle();
     }
 
     tsRenderDownloadButton(tsSelectedItems, tsWorkflowSection) {
@@ -3383,7 +3836,10 @@ export class TSArtiusBrowserPanel extends HTMLElement {
                 return;
             }
             const tsAction = tsActionButton.dataset.action;
-            if (tsAction === "recreate") {
+            if (tsAction === "inline-play") {
+                const video = tsActionButton.closest(".ts-card")?.querySelector("[data-inline-video]");
+                if (video) void this.tsPlayInlineVideo(video);
+            } else if (tsAction === "recreate") {
                 // [AI agent] Same command the context menu offers.
                 void this.tsRunExternalAction("ts-image-studio.recreate", tsAsset);
             } else if (tsAction === "use-in-studio") {
@@ -3418,6 +3874,12 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             return;
         }
         const tsCardId = Number(tsCard.dataset.cardId);
+        const video = tsEvent.target.closest("[data-inline-video]");
+        if (video && video === this.tsActiveInlineVideo) {
+            if (video.paused) void video.play().catch(() => {});
+            else video.pause();
+            return;
+        }
         const tsCardIndex = Number(tsCard.dataset.cardIndex);
         if (tsEvent.shiftKey) {
             this.tsSelectRange(tsCardIndex);
@@ -3437,6 +3899,28 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         }
         this.tsRenderSelectionButtons();
         this.tsRefreshCardSelection();
+    }
+
+    async tsPlayInlineVideo(video) {
+        if (this.tsActiveInlineVideo && this.tsActiveInlineVideo !== video) this.tsStopInlineVideos();
+        this.tsActiveInlineVideo = video;
+        this.tsInlineVideoObserver?.observe?.(video);
+        video.loop = Boolean(this.tsState.tsBrowserPreferences.inline_video_loop);
+        video.muted = Boolean(this.tsState.tsBrowserPreferences.inline_video_muted);
+        video.controls = true;
+        if (!video.src) video.src = video.dataset.src;
+        video.closest(".ts-card")?.classList.add("ts-video-playing");
+        try { await video.play(); } catch (error) { video.closest(".ts-card")?.classList.remove("ts-video-playing"); }
+    }
+
+    tsStopInlineVideos() {
+        const video = this.tsActiveInlineVideo;
+        if (!video) return;
+        this.tsInlineVideoObserver?.unobserve?.(video);
+        try { video.pause(); video.removeAttribute("src"); video.load(); } catch {}
+        video.controls = false;
+        video.closest(".ts-card")?.classList.remove("ts-video-playing");
+        this.tsActiveInlineVideo = null;
     }
 
     // [AI agent] Label for a render made in TS Image Studio: which mode
@@ -4031,6 +4515,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         }
         this.tsState.tsRootId = tsFolderButton.dataset.treeRoot || this.tsState.tsRootId;
         this.tsState.tsFolder = tsFolderButton.dataset.treeFolder || "";
+        this.tsPushFolderHistory();
         if (this.tsIsWorkflowSection()) {
             this.tsWorkflowSelectedFolder = this.tsState.tsFolder;
         }
@@ -4056,6 +4541,29 @@ export class TSArtiusBrowserPanel extends HTMLElement {
     }
 
     tsHandleKeydown(tsEvent) {
+        if (tsEvent.key === "Escape" && this.tsRefs.tsToolbarOverflow && !this.tsRefs.tsToolbarOverflow.hidden) {
+            tsEvent.preventDefault();
+            this.tsRefs.tsToolbarOverflow.hidden = true;
+            this.tsRefs.tsToolbarOverflowButton?.setAttribute("aria-expanded", "false");
+            this.tsRefs.tsToolbarOverflowButton?.focus?.();
+            return;
+        }
+        if (this.tsRefs.tsPreferences?.dataset.open === "true" && tsEvent.key === "Tab") {
+            const focusable = [...this.tsRefs.tsPreferences.querySelectorAll('button:not([disabled]),select:not([disabled]),input:not([disabled]),a[href],summary,[tabindex]:not([tabindex="-1"])')].filter((element) => !element.hidden);
+            if (!focusable.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (tsEvent.shiftKey && this.shadowRoot.activeElement === first) { tsEvent.preventDefault(); last.focus(); }
+            else if (!tsEvent.shiftKey && this.shadowRoot.activeElement === last) { tsEvent.preventDefault(); first.focus(); }
+            return;
+        }
+        if (tsEvent.key === "Escape" && this.tsRefs.tsPreferences?.dataset.open === "true") {
+            tsEvent.preventDefault();
+            this.tsTogglePreferences(false);
+            this.tsRefs.tsSettingsToggle?.focus?.();
+            return;
+        }
+        if (this.tsRefs.tsPreferences?.dataset.open === "true") return;
         // The search box and the filter inputs live inside .ts-shell, so their
         // keydown bubbles into this handler. Without this guard "?" cannot be
         // typed, the arrow keys move the grid selection instead of the caret,
@@ -4097,6 +4605,14 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         // pressing that control (its click was preventDefault-ed away).
         const tsGridTarget = this.tsResolveGridKeyTarget(tsEvent);
         if (!tsGridTarget) {
+            return;
+        }
+        if (tsEvent.key === " " && tsGridTarget === "grid" && !this.tsIsWorkflowSection()) {
+            const selected = this.tsGetSelectedItems()[0] || this.tsState.tsItems[0];
+            if (selected) {
+                tsEvent.preventDefault();
+                this.tsOpenViewer(selected.id, { tsQuickLook: true });
+            }
             return;
         }
         if (tsEvent.key === "Escape" && this.tsState.tsSelection.size > 0) {
@@ -4222,11 +4738,12 @@ export class TSArtiusBrowserPanel extends HTMLElement {
         this.tsRefreshCardSelection();
     }
 
-    tsOpenViewer(tsAssetId) {
+    tsOpenViewer(tsAssetId, tsOpenOptions = {}) {
         const tsIndex = this.tsItemIndexById.get(tsAssetId);
         if (tsIndex === undefined || tsIndex < 0) {
             return;
         }
+        this.tsStopInlineVideos();
         const tsAsset = this.tsState.tsItems[tsIndex];
         const tsCompareTypes = new Set(["image", "video"]);
         const tsSelectedCompareItems = tsCompareTypes.has(tsAsset?.type)
@@ -4262,7 +4779,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
             this.tsRenderSelectionButtons();
             this.tsRefreshCardSelection([...tsPreviousIds, tsItem.id]);
             this.tsEnsureIndexVisible(tsGlobalIndex);
-        }, tsCompareItems.length > 0 ? {
+        }, { ...(tsCompareItems.length > 0 ? {
             tsCompareItems,
             tsOnDeleted: (tsIds) => this.tsRemoveItemsByIds(tsIds),
         } : {
@@ -4274,7 +4791,7 @@ export class TSArtiusBrowserPanel extends HTMLElement {
                 await this.tsFetchAssets(false);
                 return this.tsState.tsItems.length > tsBefore;
             },
-        });
+        }), ...tsOpenOptions });
     }
 
     async tsOpenWorkflowById(tsWorkflowId) {

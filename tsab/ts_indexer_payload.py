@@ -14,10 +14,15 @@ def TSCarryExistingRowValues(
 ) -> TSAssetPayload:
     if ts_existing_row is None:
         return ts_payload
-    ts_created_at = int(ts_existing_row["created_at"] or 0) or ts_payload.ts_created_at
-    ts_updates: dict[str, Any] = {
-        "ts_created_at": ts_created_at,
-    }
+    # Refresh legacy ctime dates only when the current filesystem explicitly
+    # supplies a birth time. On filesystems without birth time (e.g. common
+    # Linux filesystems), preserve the saved value because ctime changes when
+    # file metadata changes.
+    ts_updates: dict[str, Any] = {}
+    if ts_payload.ts_creation_time_is_birthtime:
+        ts_updates["ts_created_at"] = int(ts_payload.ts_created_at or 0)
+    else:
+        ts_updates["ts_created_at"] = int(ts_existing_row["created_at"] or ts_payload.ts_created_at or 0)
     if ts_reset_processing:
         ts_updates.update(
             {

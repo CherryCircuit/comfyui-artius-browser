@@ -7,7 +7,7 @@ from .ts_settings import TS_DEFAULT_PREVIEW_SIZE, TS_PREVIEW_SIZE_MAX, TS_PREVIE
 
 TS_BROWSER_SECTIONS = {"assets", "workflows"}
 TS_VIEW_MODES = {"flat", "tree"}
-TS_ASSET_SORT_KEYS = {"created_at", "filename", "size_bytes"}
+TS_ASSET_SORT_KEYS = {"created_at", "mtime", "filename", "size_bytes"}
 TS_WORKFLOW_SORT_KEYS = {"created_at", "filename"}
 TS_SORT_DIRECTIONS = {"asc", "desc"}
 TS_ASSET_TYPES = {"image", "video", "audio", "3d"}
@@ -24,6 +24,75 @@ _TS_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # to the request-size cap. Generous for real values, hard stop for abuse.
 TS_SETTINGS_STRING_MAX_LENGTH = 512
 TS_SETTINGS_LIST_MAX_ENTRIES = 1000
+
+TS_VISIBLE_CONTROLS = {"section", "root", "types", "sort", "tree", "size", "favorites", "filters", "rescan", "compare", "download", "delete", "autoscan", "rebuild"}
+TS_METADATA_FIELDS = {"type", "resolution", "fps", "duration", "generation_time", "size_bytes"}
+TS_SELECTION_ACTIONS = {"compare", "download", "delete"}
+TS_ROOT_PROFILE_KEYS = {"tsSortKey", "tsSortDirection", "tsPreviewSize", "tsMode", "tsFolder", "tsTypes", "tsFavoritesOnly", "tsFilterDateFrom", "tsFilterDateTo", "tsFilterMinWidth", "tsFilterMaxWidth", "tsFilterMinHeight", "tsFilterMaxHeight", "tsSearchScope", "tsRecurse", "tsSearch"}
+
+
+def TSNormalizeBrowserPreferences(ts_preferences: Any) -> dict[str, Any]:
+    ts_preferences = ts_preferences if isinstance(ts_preferences, dict) else {}
+    ts_fields = ts_preferences.get("metadata_fields") if isinstance(ts_preferences.get("metadata_fields"), dict) else {}
+    ts_field_defaults = {"image": ["resolution", "generation_time"], "video": ["resolution", "fps", "duration", "generation_time"], "audio": ["duration", "generation_time"], "3d": ["type", "generation_time"]}
+    ts_normalized_fields = {}
+    for ts_type, ts_defaults in ts_field_defaults.items():
+        ts_values = ts_fields.get(ts_type, ts_defaults)
+        ts_normalized_fields[ts_type] = list(dict.fromkeys(str(x) for x in ts_values if str(x) in TS_METADATA_FIELDS))[:len(TS_METADATA_FIELDS)] if isinstance(ts_values, (list, tuple, set)) else list(ts_defaults)
+    ts_profiles = ts_preferences.get("root_profiles") if isinstance(ts_preferences.get("root_profiles"), dict) else {}
+    ts_selection_actions = ts_preferences.get("selection_actions") if isinstance(ts_preferences.get("selection_actions"), dict) else {}
+    ts_normalized_profiles = {}
+    for ts_root, ts_profile in list(ts_profiles.items())[:64]:
+        if not isinstance(ts_root, str) or not ts_root or len(ts_root) > 512 or not isinstance(ts_profile, dict):
+            continue
+        ts_clean: dict[str, Any] = {}
+        for ts_key, ts_value in ts_profile.items():
+            if ts_key not in TS_ROOT_PROFILE_KEYS:
+                continue
+            if ts_key in {"tsTypes"}:
+                ts_clean[ts_key] = [str(x)[:32] for x in ts_value[:4] if str(x) in TS_ASSET_TYPES] if isinstance(ts_value, (list, tuple)) else []
+            elif ts_key in {"tsFavoritesOnly", "tsRecurse"}:
+                ts_clean[ts_key] = bool(ts_value)
+            elif ts_key == "tsPreviewSize":
+                ts_clean[ts_key] = TSClampInt(ts_value, TS_PREVIEW_SIZE_MIN, TS_PREVIEW_SIZE_MAX, TS_DEFAULT_PREVIEW_SIZE)
+            elif ts_key in {"tsFilterMinWidth", "tsFilterMaxWidth", "tsFilterMinHeight", "tsFilterMaxHeight"}:
+                ts_clean[ts_key] = TSClampInt(ts_value, 0, TS_FILTER_DIMENSION_MAX, 0)
+            elif ts_key == "tsSortKey":
+                ts_clean[ts_key] = TSNormalizeChoice(ts_value, TS_ASSET_SORT_KEYS, "created_at")
+            elif ts_key == "tsSortDirection":
+                ts_clean[ts_key] = TSNormalizeChoice(ts_value, TS_SORT_DIRECTIONS, "desc")
+            elif ts_key == "tsMode":
+                ts_clean[ts_key] = TSNormalizeChoice(ts_value, TS_VIEW_MODES, "flat")
+            elif ts_key == "tsSearchScope":
+                ts_clean[ts_key] = TSNormalizeChoice(ts_value, TS_SEARCH_SCOPES, "filename")
+            elif ts_key in {"tsFilterDateFrom", "tsFilterDateTo"}:
+                ts_clean[ts_key] = TSNormalizeFilterDate(ts_value)
+            else:
+                ts_clean[ts_key] = TSBoundedString(ts_value)
+        ts_normalized_profiles[ts_root] = ts_clean
+    ts_controls = ts_preferences.get("visible_controls", ["section", "root", "types", "sort", "tree", "size", "favorites", "filters", "rescan"])
+    return {
+        "appearance": TSNormalizeChoice(ts_preferences.get("appearance"), {"finder", "classic"}, "finder"),
+        "toolbar_style": TSNormalizeChoice(ts_preferences.get("toolbar_style"), {"icons", "labels"}, "icons"),
+        "visible_controls": [x for x in TSNormalizeStringSequence(ts_controls) if x in TS_VISIBLE_CONTROLS],
+        "selection_actions": {
+            key: ts_selection_actions.get(key) if isinstance(ts_selection_actions.get(key), bool) else True
+            for key in TS_SELECTION_ACTIONS
+        },
+        "show_filenames": bool(ts_preferences.get("show_filenames", True)),
+        "metadata_style": TSNormalizeChoice(ts_preferences.get("metadata_style"), {"text", "badges", "hover", "hidden"}, "text"),
+        "metadata_fields": ts_normalized_fields,
+        "corner_radius": TSClampInt(ts_preferences.get("corner_radius"), 0, 24, 0),
+        "card_background": TSNormalizeChoice(ts_preferences.get("card_background"), {"transparent", "theme"}, "transparent"),
+        "card_border": bool(ts_preferences.get("card_border", False)),
+        "animate_layout": bool(ts_preferences.get("animate_layout", True)),
+        "inline_video": bool(ts_preferences.get("inline_video", True)),
+        "inline_video_loop": bool(ts_preferences.get("inline_video_loop", False)),
+        "inline_video_muted": ts_preferences.get("inline_video_muted") if isinstance(ts_preferences.get("inline_video_muted"), bool) else True,
+        "recurse": bool(ts_preferences.get("recurse", True)),
+        "root_memory": bool(ts_preferences.get("root_memory", True)),
+        "root_profiles": ts_normalized_profiles,
+    }
 
 
 def TSBoundedString(ts_value: Any, ts_default: str = "") -> str:
@@ -119,6 +188,7 @@ def TSNormalizeUISettings(ts_ui: dict[str, Any] | None) -> dict[str, Any]:
         "asset_tree_panel_width": TSClampInt(ts_ui.get("asset_tree_panel_width"), 120, 700, 220),
         "workflow_tree_panel_width": TSClampInt(ts_ui.get("workflow_tree_panel_width"), 120, 700, 220),
         "toolbar_scale": TSClampFloat(ts_ui.get("toolbar_scale"), 0.6, 1.0, 1.0),
+        "browser_preferences": TSNormalizeBrowserPreferences(ts_ui.get("browser_preferences")),
     }
 
 
@@ -192,3 +262,5 @@ def TSApplyUISettingsUpdates(ts_ui: dict[str, Any], ts_ui_updates: dict[str, Any
         ts_toolbar_scale = TSParseClampedFloat(ts_updates.get("toolbar_scale"), 0.6, 1.0)
         if ts_toolbar_scale is not None:
             ts_ui["toolbar_scale"] = ts_toolbar_scale
+    if "browser_preferences" in ts_updates:
+        ts_ui["browser_preferences"] = TSNormalizeBrowserPreferences(ts_updates.get("browser_preferences"))

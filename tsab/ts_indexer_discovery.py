@@ -100,6 +100,7 @@ def TSBuildAssetStatForRelativePath(ts_root: TSRootDefinition, ts_relative_path:
         ts_size_bytes=int(ts_stat.st_size),
         ts_mtime_ns=int(getattr(ts_stat, "st_mtime_ns", int(ts_stat.st_mtime * 1000000000))),
         ts_ctime_ns=int(getattr(ts_stat, "st_ctime_ns", int(ts_stat.st_ctime * 1000000000))),
+        ts_birthtime_ns=int(getattr(ts_stat, "st_birthtime_ns", int(getattr(ts_stat, "st_birthtime", 0) * 1000000000))),
     )
 
 
@@ -227,6 +228,7 @@ def TSIterAssetStats(
                     ts_size_bytes=int(ts_stat.st_size),
                     ts_mtime_ns=int(getattr(ts_stat, "st_mtime_ns", int(ts_stat.st_mtime * 1000000000))),
                     ts_ctime_ns=int(getattr(ts_stat, "st_ctime_ns", int(ts_stat.st_ctime * 1000000000))),
+                    ts_birthtime_ns=int(getattr(ts_stat, "st_birthtime_ns", int(getattr(ts_stat, "st_birthtime", 0) * 1000000000))),
                 )
             except (OSError, ValueError) as ts_error:
                 # ValueError: TSRelativePosixPath raises it for a symlinked

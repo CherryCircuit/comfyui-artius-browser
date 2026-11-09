@@ -1,5 +1,9 @@
 <div align="center">
 
+> This fork adds a configurable Finder-style interface, compact icon toolbar,
+> inline video previews, generation timing, and viewer/navigation controls.
+> See [customization and testing](CUSTOMIZATION.md).
+
 # 🎨 Artius Browser for ComfyUI
 
 **A fast, friendly sidebar for the files you actually use every day.**

@@ -16,7 +16,8 @@ export function tsBuildAssetSearchParams(tsOptions = {}) {
         : tsOptions.types;
     const tsFolder = Object.prototype.hasOwnProperty.call(tsOverrides, "folder")
         ? tsOverrides.folder
-        : (tsOptions.view === "tree" ? tsOptions.folder : "");
+        : (tsView === "tree" ? tsOptions.folder : "");
+    const tsRecurse = Object.prototype.hasOwnProperty.call(tsOverrides, "recurse") ? tsOverrides.recurse : tsOptions.recurse;
     const tsCursorAfter = Object.prototype.hasOwnProperty.call(tsOverrides, "cursorAfter")
         ? tsOverrides.cursorAfter
         : tsOptions.cursorAfter;
@@ -24,6 +25,7 @@ export function tsBuildAssetSearchParams(tsOptions = {}) {
     tsParams.set("view", tsView || "flat");
     tsParams.set("sort", tsSortKey || "created_at");
     tsParams.set("order", tsSortDirection || "desc");
+    if (tsRecurse === false) tsParams.set("recurse", "0");
     // Trimmed: " cat" and "cat " are the same search, and as distinct strings
     // they were distinct requests and distinct cache entries.
     const tsSearchText = String(tsSearch || "").trim();
@@ -46,6 +48,10 @@ export function tsBuildAssetSearchParams(tsOptions = {}) {
     }
     if (tsFolder) {
         tsParams.set("folder", String(tsFolder));
+    } else if (tsView === "tree" && tsRecurse === false) {
+        // An empty folder normally means “all folders”. With recurse disabled,
+        // tree mode uses the explicit empty value to mean the root itself.
+        tsParams.set("folder", "");
     }
     const tsFavoritesOnly = Object.prototype.hasOwnProperty.call(tsOverrides, "favoritesOnly")
         ? tsOverrides.favoritesOnly

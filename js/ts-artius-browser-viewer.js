@@ -29,6 +29,8 @@ import {
 import {
     tsIsOnLastFrame,
     tsIsViewerTypedCompareMode,
+    tsNormalizeCompareWipeBoundaries,
+    tsNormalizeVideoSizeMode,
     tsResolveCarriedVideoTime,
     tsResolveCompareSyncCorrection,
     tsResolveLastFrameTime,
@@ -100,6 +102,15 @@ function tsStoreVolume(tsMedia) {
 // matters most when generations are compared. One preference for the single
 // player, the compare stage and audio.
 const TS_LIGHTBOX_LOOP_STORAGE_KEY = "tsArtiusBrowser.lightboxLoop";
+const TS_VIEWER_META_STORAGE_KEY = "tsArtiusBrowser.viewerMetaCollapsed";
+const TS_VIDEO_SIZE_STORAGE_KEY = "tsArtiusBrowser.videoSizeMode";
+
+function tsReadPreference(tsKey, tsFallback) {
+    try { return window.localStorage.getItem(tsKey) ?? tsFallback; } catch { return tsFallback; }
+}
+function tsWritePreference(tsKey, tsValue) {
+    try { window.localStorage.setItem(tsKey, String(tsValue)); } catch { /* storage can be disabled */ }
+}
 
 function tsReadLoopPreference() {
     try {
@@ -211,6 +222,15 @@ export class TSArtiusBrowserViewer extends HTMLElement {
                 .ts-viewer[data-compare="true"] .ts-meta {
                     display: none;
                 }
+                .ts-meta[data-collapsed="true"] { display: none; }
+                .ts-viewer[data-meta-collapsed="true"] .ts-body { grid-template-columns: minmax(0, 1fr); }
+                .ts-video-size-label { position: absolute; z-index: 5; top: 10px; left: 12px; display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--ts-border); border-radius: 8px; background: var(--ts-status-surface); font-size: 11px; }
+                .ts-video-size-label select { max-width: 100px; padding: 4px; border-radius: 5px; }
+                .ts-video-shell { position: relative; }
+                .ts-video-shell[data-size-mode="actual"] video,
+                .ts-video-shell[data-size-mode="centered"] video { width: auto; height: auto; max-width: none; max-height: none; }
+                .ts-video-shell[data-size-mode="actual"] { align-self: flex-start; justify-self: flex-start; }
+                .ts-video-shell[data-size-mode="centered"] { align-self: center; justify-self: center; }
                 .ts-viewer[data-compare="true"] .ts-body {
                     grid-template-columns: minmax(0, 1fr);
                     min-height: 100dvh;
@@ -243,7 +263,11 @@ export class TSArtiusBrowserViewer extends HTMLElement {
                 }
                 .ts-viewer[data-compare="true"] .ts-compare-close {
                     display: flex;
+                    top: auto;
+                    right: 16px;
+                    bottom: 18px;
                 }
+                .ts-viewer[data-compare="true"] .ts-video-compare-controls { padding-right: 58px; }
                 .ts-head {
                     display: flex;
                     gap: 12px;
@@ -702,18 +726,25 @@ export class TSArtiusBrowserViewer extends HTMLElement {
                     background: var(--ts-bg-2);
                 }
                 .ts-video-compare-shell {
+                    position: relative;
                     width: min(100%, 1560px);
+                    height: 100%;
                     margin: 0 auto;
+                    flex: 1 1 auto;
                     display: grid;
+                    grid-template-rows: auto minmax(0, 1fr) auto;
                     gap: 8px;
                     align-items: center;
                     justify-self: stretch;
+                    min-height: 0;
                 }
                 .ts-video-compare-grid {
                     display: grid;
                     gap: 8px;
                     grid-template-columns: repeat(2, minmax(0, 1fr));
                 }
+                .ts-video-compare-shell > .ts-video-compare-grid,
+                .ts-video-compare-shell > .ts-video-compare-wipe-controls { align-self: stretch; }
                 .ts-video-compare-shell[data-count="2"] .ts-video-compare-grid {
                     grid-template-columns: repeat(2, minmax(0, 1fr));
                 }
@@ -760,6 +791,26 @@ export class TSArtiusBrowserViewer extends HTMLElement {
                 .ts-video-compare-shell[data-count="3"] .ts-video-compare-video {
                     max-height: min(70vh, calc(100dvh - 140px));
                 }
+                .ts-video-compare-layout-controls { position: relative; z-index: 8; display: flex; align-items: center; gap: 8px; }
+                .ts-video-compare-layout-controls .ts-video-size-label { position: static; z-index: auto; top: auto; left: auto; }
+                .ts-video-compare-wipe-controls { grid-column: 1; grid-row: 2; position: relative; z-index: 7; min-width: 0; min-height: 0; pointer-events: none; }
+                .ts-video-compare-wipe-controls[hidden] { display: none !important; }
+                .ts-video-compare-wipe-range { position: absolute; z-index: 1; top: 0; width: 100%; height: 100%; margin: 0; appearance: none; background: transparent; pointer-events: auto; cursor: ew-resize; }
+                .ts-video-compare-wipe-range::-webkit-slider-runnable-track { height: 100%; background: transparent; }
+                .ts-video-compare-wipe-range::-moz-range-track { height: 100%; background: transparent; }
+                .ts-video-compare-wipe-range::-webkit-slider-thumb { appearance: none; width: 4px; height: 100%; border: 0; border-radius: 2px; background: color-mix(in srgb, var(--ts-accent) 86%, white); box-shadow: 0 0 0 1px #0008, 0 0 12px #0008; }
+                .ts-video-compare-wipe-range::-moz-range-thumb { width: 4px; height: 100%; border: 0; border-radius: 2px; background: color-mix(in srgb, var(--ts-accent) 86%, white); box-shadow: 0 0 0 1px #0008, 0 0 12px #0008; }
+                .ts-video-compare-wipe-range:focus-visible::-webkit-slider-thumb { outline: 2px solid white; outline-offset: 2px; }
+                .ts-video-compare-divider { position: absolute; z-index: 2; top: 0; bottom: 0; width: 14px; margin-left: -7px; background: transparent; cursor: ew-resize; pointer-events: auto; touch-action: none; }
+                .ts-video-compare-divider::after { content: ""; position: absolute; top: 0; bottom: 0; left: 6px; width: 2px; background: white; box-shadow: 0 0 8px #000; }
+                .ts-video-compare-divider:hover::after { width: 4px; left: 5px; }
+                .ts-video-compare-shell[data-layout="wipe"] { min-height: min(78vh, calc(100dvh - 140px)); background: color-mix(in srgb, var(--ts-bg-0) 90%, #151515); }
+                .ts-video-compare-shell[data-layout="wipe"] .ts-video-compare-grid { position: relative; grid-column: 1; grid-row: 2; display: block; min-height: 0; }
+                .ts-video-compare-shell[data-layout="wipe"] .ts-video-compare-card { position: absolute; inset: 0; width: auto; height: auto; min-height: 0; overflow: hidden; clip-path: inset(0 calc(100% - var(--ts-wipe-end)) 0 var(--ts-wipe-start)); }
+                .ts-video-compare-shell[data-layout="wipe"] .ts-video-compare-card:not(:first-child) { pointer-events: none; }
+                .ts-video-compare-shell[data-layout="wipe"] .ts-video-compare-video { width: 100%; height: 100%; max-width: 100%; max-height: 100%; object-fit: contain; }
+                .ts-video-compare-shell[data-layout="wipe"] .ts-video-compare-label { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); }
+                .ts-viewer-info-toggle { min-width: 58px; }
                 .ts-video-compare-shell[data-count="4"] .ts-video-compare-video {
                     max-height: min(35vh, calc((100dvh - 160px) / 2));
                 }
@@ -1131,6 +1182,16 @@ export class TSArtiusBrowserViewer extends HTMLElement {
                         max-height: max(160px, calc(62dvh - 200px));
                     }
                 }
+                .ts-video-compare-shell[data-size-mode="actual"] .ts-video-compare-card { align-content: start; justify-items: start; }
+                .ts-video-compare-shell[data-size-mode="actual"] .ts-video-compare-video,
+                .ts-video-compare-shell[data-size-mode="centered"] .ts-video-compare-video { width: auto; height: auto; max-width: none; max-height: none; }
+                .ts-video-compare-shell[data-size-mode="actual"] .ts-video-compare-video { justify-self: start; }
+                .ts-video-compare-shell[data-size-mode="centered"] .ts-video-compare-card { align-content: center; justify-items: center; }
+                .ts-video-compare-shell[data-size-mode="centered"] .ts-video-compare-video { justify-self: center; align-self: center; }
+                .ts-video-compare-shell[data-layout="wipe"][data-size-mode="actual"] .ts-video-compare-video,
+                .ts-video-compare-shell[data-layout="wipe"][data-size-mode="centered"] .ts-video-compare-video { width: auto; height: auto; max-width: none; max-height: none; }
+                .ts-video-compare-shell[data-layout="wipe"][data-size-mode="actual"] .ts-video-compare-video { justify-self: start; align-self: start; }
+                .ts-video-compare-shell[data-layout="wipe"][data-size-mode="centered"] .ts-video-compare-video { justify-self: center; align-self: center; }
             </style>
             <div class="ts-viewer" data-open="false" role="dialog" aria-modal="true" aria-labelledby="ts-viewer-title" tabindex="-1">
                 <div class="ts-head">
@@ -1144,6 +1205,7 @@ export class TSArtiusBrowserViewer extends HTMLElement {
                         <button class="ts-show-in-folder" type="button"></button>
                         <button class="ts-delete" type="button"></button>
                         <button class="ts-help-button" type="button">?</button>
+                        <button class="ts-viewer-info-toggle" type="button" aria-pressed="false"></button>
                         <button class="ts-close" type="button"></button>
                     </div>
                 </div>
@@ -1186,6 +1248,7 @@ export class TSArtiusBrowserViewer extends HTMLElement {
             tsHelpBody: this.shadowRoot.querySelector(".ts-help-body"),
             tsHelpClose: this.shadowRoot.querySelector(".ts-help-close"),
             tsHelpButton: this.shadowRoot.querySelector(".ts-help-button"),
+            tsInfoToggle: this.shadowRoot.querySelector(".ts-viewer-info-toggle"),
         };
         this.tsRefs.tsStage.style.setProperty("--ts-audio-shell-max-width", `${tsViewerSettings.audio.maxWidth}px`);
         this.tsRefs.tsStage.style.setProperty("--ts-audio-waveform-max-height", `${tsViewerSettings.audio.waveformMaxHeight}px`);
@@ -1200,6 +1263,7 @@ export class TSArtiusBrowserViewer extends HTMLElement {
         });
         this.tsRefs.tsDeleteButton.addEventListener("click", () => void this.tsDeleteCurrent());
         this.tsRefs.tsHelpButton.addEventListener("click", () => this.tsToggleHelp(true));
+        this.tsRefs.tsInfoToggle.addEventListener("click", () => this.tsToggleMetaCollapsed());
         this.tsRefs.tsHelpClose.addEventListener("click", () => this.tsToggleHelp(false));
         this.tsRefs.tsHelp.addEventListener("click", (tsEvent) => {
             if (tsEvent.target === this.tsRefs.tsHelp) {
@@ -1291,6 +1355,18 @@ export class TSArtiusBrowserViewer extends HTMLElement {
         return this.tsIndex >= 0 && this.tsItems.length > 0 && !this.tsClosingTimer;
     }
 
+    tsToggleMetaCollapsed(tsForce = undefined) {
+        if (!this.tsRefs?.tsRoot) return;
+        const tsCollapsed = tsForce === undefined
+            ? this.tsRefs.tsRoot.dataset.metaCollapsed !== "true"
+            : Boolean(tsForce);
+        this.tsRefs.tsRoot.dataset.metaCollapsed = String(tsCollapsed);
+        this.tsRefs.tsMeta.dataset.collapsed = String(tsCollapsed);
+        this.tsRefs.tsInfoToggle?.setAttribute("aria-pressed", String(!tsCollapsed));
+        this.tsRefs.tsInfoToggle.textContent = tsCollapsed ? this.tsT("button.showInfo", "Info") : this.tsT("button.hideInfo", "Hide Info");
+        tsWritePreference(TS_VIEWER_META_STORAGE_KEY, tsCollapsed ? "1" : "0");
+    }
+
     tsOpen(tsItems, tsIndex, tsOnChange = null, tsOptions = null) {
         this.tsItems = Array.isArray(tsItems) ? [...tsItems] : [];
         this.tsIndex = Math.max(0, Math.min(tsIndex, this.tsItems.length - 1));
@@ -1299,6 +1375,7 @@ export class TSArtiusBrowserViewer extends HTMLElement {
         this.tsRequestMore = typeof tsOptions?.tsRequestMore === "function" ? tsOptions.tsRequestMore : null;
         this.tsCanLoadMore = typeof tsOptions?.tsCanLoadMore === "function" ? tsOptions.tsCanLoadMore : null;
         this.tsCompareItems = Array.isArray(tsOptions?.tsCompareItems) ? [...tsOptions.tsCompareItems] : [];
+        this.tsQuickLook = Boolean(tsOptions?.tsQuickLook);
         this.tsOnDeleted = typeof tsOptions?.tsOnDeleted === "function" ? tsOptions.tsOnDeleted : null;
         this.tsMoreRequestPromise = null;
         // Reopened while the previous close was still fading: that close is
@@ -1377,6 +1454,7 @@ export class TSArtiusBrowserViewer extends HTMLElement {
     }
 
     tsFinishClose() {
+        this.dispatchEvent(new CustomEvent("ts-viewer-closed", { bubbles: true, composed: true }));
         this.tsDropStageGhost();
         this.tsTeardownStage();
         this.tsVideoCarry = null;
@@ -1519,8 +1597,11 @@ export class TSArtiusBrowserViewer extends HTMLElement {
                 ["Esc", this.tsT("shortcuts.closeOrReset", "Back to the whole picture, then close")],
                 ["← →", this.tsT("shortcuts.nav", "Previous / next asset")],
                 ["↑ ↓", this.tsT("shortcuts.frame", "Step one video frame")],
+                ["Space", this.tsQuickLook
+                    ? this.tsT("shortcuts.close", "Close Quick Look")
+                    : this.tsT("shortcuts.playPause", "Play / pause")],
+                ["I", this.tsT("shortcuts.viewerInfo", "Show or hide file information")],
                 ["Home / End", this.tsT("shortcuts.firstLastFrame", "First / last frame")],
-                ["Space", this.tsT("shortcuts.playPause", "Play / pause")],
                 ["+ − / 1 / 0", this.tsT("shortcuts.zoomSingle", "Zoom / actual pixels / fit")],
                 [this.tsT("shortcuts.clickKey", "Click"), this.tsT("shortcuts.clickZoom", "Actual pixels at that point, click again to fit")],
                 [this.tsT("shortcuts.pinchKey", "Wheel / pinch"), this.tsT("shortcuts.zoomGesture", "Zoom around the pointer")],
@@ -1583,6 +1664,11 @@ export class TSArtiusBrowserViewer extends HTMLElement {
             this.tsClose();
             return;
         }
+        if ((tsEvent.key === "i" || tsEvent.key === "I") && !tsEvent.ctrlKey && !tsEvent.metaKey && !tsEvent.altKey) {
+            tsEvent.preventDefault();
+            this.tsToggleMetaCollapsed();
+            return;
+        }
         if (tsEvent.key === "?") {
             tsEvent.preventDefault();
             this.tsToggleHelp(true);
@@ -1602,8 +1688,11 @@ export class TSArtiusBrowserViewer extends HTMLElement {
                 return;
             }
         }
-        if (tsEvent.key === " " || tsEvent.key === "Spacebar") {
-            if (this.tsTogglePlayback(tsEvent)) {
+        if (tsEvent.key === " " || tsEvent.key === "Spacebar" || tsEvent.code === "Space") {
+            if (this.tsQuickLook) {
+                tsEvent.preventDefault();
+                this.tsClose();
+            } else if (this.tsTogglePlayback(tsEvent)) {
                 tsEvent.preventDefault();
             }
             return;
@@ -2171,6 +2260,9 @@ export class TSArtiusBrowserViewer extends HTMLElement {
         const tsAsset = this.tsIndex >= 0 ? this.tsItems[this.tsIndex] : null;
         const tsIsOpen = Boolean(tsAsset);
         this.tsRefs.tsRoot.dataset.open = String(tsIsOpen);
+        if (this.tsRefs.tsRoot.dataset.metaCollapsed === undefined) {
+            this.tsToggleMetaCollapsed(tsReadPreference(TS_VIEWER_META_STORAGE_KEY, "0") === "1");
+        }
         this.style.pointerEvents = tsIsOpen ? "auto" : "none";
         const tsCloseLabel = this.tsT("button.close", "Close");
         const tsPrevLabel = this.tsT("button.prev", "Previous");
@@ -2193,6 +2285,7 @@ export class TSArtiusBrowserViewer extends HTMLElement {
         );
         tsLabelButton(this.tsRefs.tsCloseButton, tsCloseLabel, this.tsT("tooltip.viewerClose", "Close (Esc)"));
         this.tsRefs.tsHelpButton.title = this.tsT("tooltip.help", "Keyboard shortcuts (?)");
+        this.tsRefs.tsInfoToggle.title = this.tsT("tooltip.viewerInfo", "Show or hide file information (I)");
         this.tsRefs.tsHelpButton.setAttribute("aria-label", this.tsT("tooltip.help", "Keyboard shortcuts (?)"));
         this.tsRefs.tsCompareCloseButton.title = tsCloseLabel;
         this.tsRefs.tsCompareCloseButton.setAttribute("aria-label", tsCloseLabel);
@@ -2365,6 +2458,7 @@ export class TSArtiusBrowserViewer extends HTMLElement {
 
     tsSetupVideoStage(tsAsset) {
         const tsStage = this.tsRefs.tsStage;
+        const tsVideoSizeCleanup = this.tsBindVideoSizeControl(tsStage?.querySelector(".ts-video-shell"));
         const tsVideo = tsStage?.querySelector("video");
         const tsPrevFrameButton = tsStage?.querySelector(".ts-video-prev-frame");
         const tsNextFrameButton = tsStage?.querySelector(".ts-video-next-frame");
@@ -2569,11 +2663,29 @@ export class TSArtiusBrowserViewer extends HTMLElement {
             tsVideo.removeEventListener("volumechange", tsHandleVolumeChange);
             tsReleaseFallback();
             tsReleaseMediaSource(tsVideo);
+            tsVideoSizeCleanup?.();
         };
+    }
+
+    tsBindVideoSizeControl(tsShell) {
+        const tsSelect = tsShell?.querySelector(".ts-video-size-mode");
+        if (!tsShell || !tsSelect) return null;
+        const tsAllowed = new Set(["fit", "actual", "centered"]);
+        const tsInitial = tsReadPreference(TS_VIDEO_SIZE_STORAGE_KEY, "fit");
+        tsSelect.value = tsNormalizeVideoSizeMode(tsAllowed.has(tsInitial) ? tsInitial : "fit");
+        const tsApply = () => {
+            tsShell.dataset.sizeMode = tsSelect.value;
+            tsWritePreference(TS_VIDEO_SIZE_STORAGE_KEY, tsSelect.value);
+        };
+        tsSelect.addEventListener("change", tsApply);
+        tsApply();
+        return () => tsSelect.removeEventListener("change", tsApply);
     }
 
     tsSetupVideoCompareStage(tsAsset) {
         const tsStage = this.tsRefs.tsStage;
+        const tsCompareShell = tsStage?.querySelector(".ts-video-compare-shell");
+        const tsVideoSizeCleanup = this.tsBindVideoSizeControl(tsCompareShell);
         const tsVideos = Array.from(tsStage?.querySelectorAll(".ts-compare-video") || []);
         const tsPlayToggleButton = tsStage?.querySelector(".ts-video-play-toggle");
         const tsSeekInput = tsStage?.querySelector(".ts-video-seek");
@@ -2596,6 +2708,72 @@ export class TSArtiusBrowserViewer extends HTMLElement {
         }
 
         const tsStatusLabel = tsStage?.querySelector(".ts-video-compare-status");
+        const tsLayoutButton = tsStage?.querySelector(".ts-video-compare-layout");
+        const tsWipeControls = tsStage?.querySelector(".ts-video-compare-wipe-controls");
+        const tsWipeRanges = [];
+        const tsWipeDividers = [];
+        if (tsCompareShell && tsLayoutButton && tsWipeControls) {
+            tsWipeControls.innerHTML = tsVideos.slice(0, -1).map((tsVideo, tsIndex) =>
+                `<span class="ts-video-compare-divider" aria-hidden="true"></span><input class="ts-video-compare-wipe-range" type="range" min="0" max="100" value="${(tsIndex + 1) * 100 / tsVideos.length}" aria-label="Comparison divider ${tsIndex + 1} of ${tsVideos.length - 1}" title="Drag to adjust comparison divider">`,
+            ).join("");
+            tsWipeRanges.push(...tsWipeControls.querySelectorAll(".ts-video-compare-wipe-range"));
+            tsWipeDividers.push(...tsWipeControls.querySelectorAll(".ts-video-compare-divider"));
+        }
+        const tsApplyWipeBoundaries = () => {
+            const tsBounds = tsNormalizeCompareWipeBoundaries(tsWipeRanges.map((tsRange) => tsRange.value), tsVideos.length);
+            tsWipeRanges.forEach((tsRange, tsIndex) => { tsRange.value = String(tsBounds[tsIndex + 1]); });
+            tsWipeControls.querySelectorAll(".ts-video-compare-divider").forEach((tsDivider, tsIndex) => {
+                tsDivider.style.left = `${tsBounds[tsIndex + 1]}%`;
+            });
+            tsStage.querySelectorAll(".ts-video-compare-card").forEach((tsCard, tsIndex) => {
+                tsCard.style.setProperty("--ts-wipe-start", `${tsBounds[tsIndex]}%`);
+                tsCard.style.setProperty("--ts-wipe-end", `${tsBounds[tsIndex + 1]}%`);
+            });
+        };
+        const tsHandleLayoutToggle = () => {
+            const tsWipe = tsCompareShell.dataset.layout !== "wipe";
+            tsCompareShell.dataset.layout = tsWipe ? "wipe" : "split";
+            tsLayoutButton.textContent = tsWipe ? this.tsT("button.split", "Split view") : this.tsT("button.wipe", "Wipe view");
+            tsLayoutButton.setAttribute("aria-pressed", String(tsWipe));
+            tsWipeControls.hidden = !tsWipe;
+        };
+        const tsDividerPointerHandlers = tsWipeDividers.map((tsDivider, tsIndex) => {
+            const tsRange = tsWipeRanges[tsIndex];
+            const tsGrid = tsCompareShell?.querySelector(".ts-video-compare-grid");
+            const tsSetFromPointer = (tsEvent) => {
+                if (!tsGrid || !tsRange) return;
+                const tsBounds = tsGrid.getBoundingClientRect();
+                if (tsBounds.width <= 0) return;
+                tsRange.value = String(((tsEvent.clientX - tsBounds.left) / tsBounds.width) * 100);
+                tsApplyWipeBoundaries();
+            };
+            const tsHandlePointerDown = (tsEvent) => {
+                if (tsEvent.button !== 0) return;
+                tsEvent.preventDefault();
+                tsDivider.setPointerCapture?.(tsEvent.pointerId);
+                tsRange?.focus({ preventScroll: true });
+                tsSetFromPointer(tsEvent);
+            };
+            const tsHandlePointerMove = (tsEvent) => {
+                if (tsDivider.hasPointerCapture?.(tsEvent.pointerId)) tsSetFromPointer(tsEvent);
+            };
+            const tsHandlePointerUp = (tsEvent) => {
+                if (tsDivider.hasPointerCapture?.(tsEvent.pointerId)) tsDivider.releasePointerCapture(tsEvent.pointerId);
+            };
+            tsDivider.addEventListener("pointerdown", tsHandlePointerDown);
+            tsDivider.addEventListener("pointermove", tsHandlePointerMove);
+            tsDivider.addEventListener("pointerup", tsHandlePointerUp);
+            tsDivider.addEventListener("pointercancel", tsHandlePointerUp);
+            return () => {
+                tsDivider.removeEventListener("pointerdown", tsHandlePointerDown);
+                tsDivider.removeEventListener("pointermove", tsHandlePointerMove);
+                tsDivider.removeEventListener("pointerup", tsHandlePointerUp);
+                tsDivider.removeEventListener("pointercancel", tsHandlePointerUp);
+            };
+        });
+        tsLayoutButton?.addEventListener("click", tsHandleLayoutToggle);
+        tsWipeRanges.forEach((tsRange) => tsRange.addEventListener("input", tsApplyWipeBoundaries));
+        tsApplyWipeBoundaries();
         const tsPrimaryVideo = tsVideos.find((tsVideo) => tsVideo.dataset.primary === "true") || tsVideos[0];
         // How far ahead a clip must be buffered before playback resumes. The
         // stall threshold (readyState < HAVE_FUTURE_DATA) and this one are
@@ -2900,6 +3078,10 @@ export class TSArtiusBrowserViewer extends HTMLElement {
                 tsApplySync("align");
             }
             tsStopTicker();
+            tsLayoutButton?.removeEventListener("click", tsHandleLayoutToggle);
+            tsDividerPointerHandlers.forEach((tsCleanup) => tsCleanup());
+            tsWipeRanges.forEach((tsRange) => tsRange.removeEventListener("input", tsApplyWipeBoundaries));
+            tsVideoSizeCleanup?.();
             tsUpdateTransport();
         };
         const tsPlayAll = () => {

@@ -285,6 +285,14 @@ class TSConfigStore:
                 ts_config.get(ts_section, {}).get(ts_key),
                 bool(ts_default.get(ts_section, {}).get(ts_key, False)),
             )
+        # Browser-specific customization is a bounded nested object. Normalize
+        # it here too so unrelated config consumers never preserve junk or
+        # accidentally discard future additions to this UI preference family.
+        from .ts_ui_settings import TSNormalizeBrowserPreferences
+
+        ts_config["ui"]["browser_preferences"] = TSNormalizeBrowserPreferences(
+            ts_config["ui"].get("browser_preferences")
+        )
 
     def _TSWriteConfigAtomically(self, ts_config: dict) -> None:
         self.ts_config_path.parent.mkdir(parents=True, exist_ok=True)

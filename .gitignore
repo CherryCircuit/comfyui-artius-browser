@@ -39,9 +39,10 @@ CLAUDE.md
 doc/
 code-review-report.md
 
-# Tests are PRIVATE to the master working copy. They are never tracked in the
-# public repo nor synced into the ComfyUI deploy. The whole tree is ignored.
-tests/
+# Regression tests and the isolated browser harness are tracked in this fork.
+# Runtime packaging still excludes them through .comfyignore.
+tests/artifacts/
+node_modules/
 
 # Project memory (AI session state) is private to the master working copy.
 project_memory/

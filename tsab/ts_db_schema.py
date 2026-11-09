@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-TS_DB_SCHEMA_VERSION = 13
+TS_DB_SCHEMA_VERSION = 14
 
 # Per-connection page cache, in KiB. Deliberately small: connections are opened
 # per thread and never closed, so whatever is set here is multiplied by the size
@@ -127,6 +127,17 @@ CREATE TABLE IF NOT EXISTS asset_favorites (
     created_at INTEGER NOT NULL DEFAULT 0
 );
 
+-- Generation provenance is durable user data; cache rebuilds never drop it.
+CREATE TABLE IF NOT EXISTS asset_generation_provenance (
+    path TEXT PRIMARY KEY,
+    size_bytes INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    generation_time_seconds REAL NOT NULL,
+    generation_time_source TEXT NOT NULL,
+    generation_prompt_id TEXT NOT NULL,
+    generation_success_time REAL NOT NULL DEFAULT 0
+);
+
 -- Indexes no query uses: path duplicates the UNIQUE constraint's own index,
 -- filename was BINARY while every filename sort is NOCASE, and nothing filters
 -- on hash, status or has_preview alone. Each one was paid on every upsert of
@@ -197,14 +208,18 @@ SELECT
     assets.has_metadata AS has_metadata,
     assets.is_companion_image AS is_companion_image,
     assets.companion_stem AS companion_stem,
-    assets.status AS status
+    assets.status AS status,
+    CASE WHEN asset_generation_provenance.size_bytes = assets.size_bytes AND asset_generation_provenance.mtime_ns = assets.mtime_ns THEN asset_generation_provenance.generation_time_seconds END AS generation_time_seconds,
+    CASE WHEN asset_generation_provenance.size_bytes = assets.size_bytes AND asset_generation_provenance.mtime_ns = assets.mtime_ns THEN asset_generation_provenance.generation_time_source END AS generation_time_source,
+    CASE WHEN asset_generation_provenance.size_bytes = assets.size_bytes AND asset_generation_provenance.mtime_ns = assets.mtime_ns THEN asset_generation_provenance.generation_prompt_id END AS generation_prompt_id
 FROM assets
 INNER JOIN asset_types ON asset_types.id = assets.type_lookup_id
 INNER JOIN asset_extensions ON asset_extensions.id = assets.extension_lookup_id
 INNER JOIN asset_roots ON asset_roots.id = assets.root_lookup_id
 INNER JOIN asset_folders ON asset_folders.id = assets.folder_lookup_id
 LEFT JOIN asset_metadata ON asset_metadata.asset_id = assets.id
-LEFT JOIN asset_favorites ON asset_favorites.path = assets.path;
+LEFT JOIN asset_favorites ON asset_favorites.path = assets.path
+LEFT JOIN asset_generation_provenance ON asset_generation_provenance.path = assets.path;
 """
 
 # What an asset CARD needs from assets_view (TSBuildAssetCard): every column
@@ -220,6 +235,7 @@ TS_DB_CARD_COLUMNS_SQL = """
     assets_view.scope, assets_view.root_id, assets_view.is_favorite,
     assets_view.is_indexed, assets_view.has_preview, assets_view.has_metadata,
     assets_view.is_companion_image, assets_view.status,
+    assets_view.generation_time_seconds, assets_view.generation_time_source, assets_view.generation_prompt_id,
     (assets_view.workflow_text != '') AS has_workflow,
     (assets_view.prompt_text != '') AS has_prompt
 """

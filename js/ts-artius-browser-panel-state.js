@@ -41,7 +41,7 @@ export function tsNormalizeSortDirection(tsValue, tsFallback) {
 }
 
 export function tsNormalizeAssetSortKey(tsValue, tsFallback) {
-    return tsValue === "created_at" || tsValue === "filename" || tsValue === "size_bytes" ? tsValue : tsFallback;
+    return tsValue === "created_at" || tsValue === "mtime" || tsValue === "filename" || tsValue === "size_bytes" ? tsValue : tsFallback;
 }
 
 export function tsNormalizeWorkflowSortKey(tsValue, tsFallback) {
